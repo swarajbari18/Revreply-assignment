@@ -1,0 +1,879 @@
+# Scalable Gmail Auto-Responder
+
+## High-Level Architecture
+
+The architecture is split into a small number of independent responsibilities. Each component owns a single concern and communicates with the next through well-defined interfaces. Gmail remains the source of truth for email data, while RevReply owns the AI decisions, workflow state, and audit history.
+
+> **High-Level Architecture**
+
+```
+                           +----------------+
+                           |     Gmail      |
+                           +----------------+
+                                   │
+                     Push Notification (Pub/Sub)
+                                   │
+                                   ▼
+                    +-----------------------------+
+                    |      Ingestion Component    |
+                    +-----------------------------+
+                                   │
+                         Queue (Durability Boundary)
+                                   │
+                                   ▼
+                    +-----------------------------+
+                    |      Context Builder        |
+                    +-----------------------------+
+                                   │
+                                   ▼
+                    +-----------------------------+
+                    |     AI Understanding        |
+                    +-----------------------------+
+                                   │
+                      Intent / Risk / Confidence
+                                   │
+                                   ▼
+                    +-----------------------------+
+                    |      Decision Engine        |
+                    +-----------------------------+
+                          │        │         │
+                 Auto Send │ Draft │ Escalate
+                          ▼        ▼         ▼
+                     Gmail API  Gmail API  Dashboard
+                                   │
+                                   ▼
+                          +------------------+
+                          |    Dashboard     |
+                          +------------------+
+```
+
+### Why these components?
+
+I intentionally separated the system by responsibility instead of technology.
+
+- **Ingestion** is responsible only for reliably receiving Gmail events (or any other events like whatsapp, outlook, slack, etc, we will add more interfaces in this system, this is extensible).
+- **Context Builder** gathers everything required for reasoning, including the email thread, attachments, and user configs (again limited to gmail for now, but is extensible ).
+- **AI Pipeline** converts unstructured conversation into structured information (intent, confidence, risk, draft).
+- **Decision Engine** contains deterministic business logic. The LLM recommends; it never decides whether an email is sent automatically.
+- **Action Executor** performs the chosen action through the Gmail API.
+- **Dashboard** exposes drafts, escalations, and workflow history to the user.
+
+This separation keeps each component cohesive and allows the AI layer to evolve independently from the Gmail integration.
+
+### System Boundaries
+
+One of the design decisions I made early was to avoid duplicating data that Gmail already owns.
+
+The email itself, attachments, threads and drafts remain inside Gmail and are fetched on demand.
+
+We stores only information that it creates itself, such as AI classifications, workflow history, audit records, user preferences and OAuth metadata.
+
+This keeps the architecture simpler, avoids synchronization problems, and makes Gmail the single source of truth for mailbox data.
+
+## Major Engineering Decisions
+
+Throughout the design I tried to follow one principle:
+
+> Prefer simple systems with clear ownership over complex systems with speculative optimizations.
+
+Whenever I had to choose between introducing another component and keeping the architecture simpler, I chose the simpler option unless there was a measurable engineering reason not to.
+
+| I Chose                  | Instead Of                        | Why                                              |
+| ------------------------ | --------------------------------- | ------------------------------------------------ |
+| Gmail Push               | Polling                           | Lower latency, Google's recommended architecture |
+| Gmail as source of truth | Mirroring emails                  | Avoid synchronization                            |
+| One queue                | Multiple queues                   | Simpler operations                               |
+| One AI prompt            | Multi-agent workflow              | Lower latency                                    |
+| Business rules           | AI decides                        | Deterministic behaviour                          |
+| Queue durability         | Persisting incoming notifications | Fewer writes, queue already provides durability  |
+
+---
+
+### Decision 1 — Assume Platform Authentication
+
+**Decision**
+
+The implementation assumes the user is already authenticated into RevReply.
+
+Authentication into the platform (login, session management and user identity) is outside the scope of this assignment.
+
+Connecting Gmail accounts remains fully in scope.
+
+**Why**
+
+The assignment focuses on Gmail ingestion and AI workflow architecture rather than user authentication.
+
+This allows the implementation to focus on the engineering problems specific to Gmail while still designing the complete Gmail connection lifecycle.
+
+**Included**
+
+- Gmail OAuth
+- Connecting Gmail accounts
+- Multiple connected Gmail accounts
+- Access token storage
+- Refresh token storage
+- Automatic token refresh
+- Gmail watch creation
+- Gmail watch renewal
+
+**Out of Scope**
+
+- Platform login
+- Registration
+- Session management
+- Password reset
+
+---
+
+### Decision 2 — Multiple Gmail Accounts per User
+
+**Decision**
+
+A RevReply user may connect multiple Gmail accounts.
+
+Each connected account is treated as an independent integration with its own OAuth credentials, watch subscription and synchronization state.
+
+**Why**
+
+Sales teams commonly operate multiple inboxes for outreach.
+
+Treating each mailbox independently simplifies synchronization, token management and workflow ownership.
+
+Each ConnectedAccount stores:
+
+- Gmail email address
+- Access Token
+- Refresh Token
+- Watch Expiration
+- Last History ID
+
+This allows failures, token refreshes and watch renewals to be managed independently for every mailbox.
+
+---
+
+### Decision 3 — OAuth Lifecycle
+
+**Decision**
+
+OAuth access tokens are treated as short-lived credentials.
+
+Refresh tokens are persisted securely and used to obtain new access tokens automatically whenever required.
+
+If a refresh token becomes invalid or is revoked, the connected account is marked as disconnected and requires the user to reconnect through the Gmail OAuth flow.
+
+**Why**
+
+This keeps Gmail access uninterrupted while preventing unnecessary user interaction during normal operation.
+
+Permanent authorization failures become explicit operational events rather than repeated processing failures.
+
+---
+
+### Decision 4 — Gmail Push Notifications instead of Polling
+
+**Decision**
+
+Use Gmail `watch()` with Google Cloud Pub/Sub.
+
+**Why**
+
+Polling introduces unnecessary latency, API usage and operational cost. Gmail already provides a push-based notification mechanism designed for server-side applications.
+
+**Trade-off**
+
+Polling
+
++ Simpler to understand.
+- Higher latency.
+- Constant API usage.
+- Doesn't scale well.
+
+Push Notifications
+
++ Near real-time.
++ Lower API usage.
++ Google's recommended production architecture.
+
+- Requires Pub/Sub.
+- Watches must be renewed periodically.
+
+---
+
+### Decision 5 — Gmail is the Source of Truth
+
+**Decision**
+
+Emails, threads, attachments and drafts remain inside Gmail.
+
+RevReply stores only the information it owns.
+
+**Why**
+
+Duplicating mailbox data creates synchronization problems and significantly increases storage requirements.
+
+Whenever processing begins, the latest conversation state is fetched directly from Gmail.
+
+**Stored by RevReply**
+
+- OAuth metadata
+- AI classifications
+- Decision history
+- Audit history
+- User preferences
+- Workflow state
+
+---
+
+### Decision 6 — Queue as the Durability Boundary
+
+**Decision**
+
+Incoming Gmail notifications are immediately placed onto a queue.
+
+The queue becomes the durability boundary.
+
+The notification itself is not persisted inside MySQL.
+
+**Why**
+
+Pub/Sub guarantees delivery.
+
+Once the notification has been accepted by the queue, processing becomes asynchronous.
+
+This keeps the webhook extremely fast while avoiding unnecessary database writes.
+
+The worker reconstructs the latest mailbox state using Gmail's `historyId`.
+
+---
+
+### Decision 7 — Single AI Workflow
+
+**Decision**
+
+The current implementation uses a single structured LLM prompt.
+
+The prompt produces
+
+- Intent
+- Confidence
+- Risk
+- Suggested Draft
+
+**Why**
+
+Multiple LLM calls increase latency and operational complexity.
+
+The architecture keeps the AI layer simple until production evaluations demonstrate that additional stages (critic, evaluator, self-reflection) are necessary.
+
+**Future Evolution**
+
+Evaluation-driven development can later split this workflow into specialized reasoning stages if quality measurements justify the additional latency.
+
+---
+
+### Decision 8 — AI Does Not Make Business Decisions
+
+**Decision**
+
+The LLM provides understanding.
+
+The Decision Engine determines the final action.
+
+Possible actions are
+
+- Auto Send
+- Create Draft
+- Escalate
+- Ignore
+
+**Why**
+
+Business policy should remain deterministic.
+
+The LLM recommends an action, but business rules determine whether that recommendation is acceptable.
+
+For example, company policy may require all pricing emails to remain human-reviewed regardless of model confidence.
+
+---
+
+### Decision 9 — Minimize Stored State
+
+**Decision**
+
+Store only data that cannot be reconstructed.
+
+Everything else is retrieved from Gmail when required.
+
+**Why**
+
+This reduces synchronization issues and simplifies long-term maintenance.
+
+Transient processing data (thread context, parsed attachments, intermediate AI inputs) exists only during workflow execution and is discarded afterwards.
+
+---
+
+### Decision 10 — Production Before Optimization
+
+**Decision**
+
+The architecture intentionally avoids introducing additional queues, multiple AI stages, distributed workflows or replicated mailbox storage until there is production evidence they are required, if in production we find issues regarding these we will have to come back at this point.
+
+## Data Ownership
+
+One of the first architectural decisions was to avoid duplicating mailbox data.
+
+Gmail already owns the mailbox and provides APIs to retrieve the latest state of conversations, attachments and drafts. Instead of synchronizing mailbox data into our own database, RevReply only stores information that it creates itself.
+
+This reduces synchronization complexity and keeps Gmail as the single source of truth for email data.
+
+| Data | Source of Truth | Stored By | Reason |
+|-------|-----------------|-----------|--------|
+| Emails | Gmail | Gmail | Original mailbox data |
+| Email Threads | Gmail | Gmail | Retrieved when processing |
+| Attachments | Gmail | Gmail | Retrieved on demand |
+| Gmail Drafts | Gmail | Gmail | Created through Gmail API |
+| Connected Gmail Accounts | RevReply | MySQL | OAuth metadata |
+| OAuth Tokens | RevReply | MySQL | Gmail API access |
+| User Preferences | RevReply | MySQL | AI behaviour & settings |
+| AI Classification | RevReply | MySQL | Dashboard & audit |
+| AI Decision | RevReply | MySQL | Workflow history |
+| Workflow State | RevReply | MySQL | Resumable processing |
+| Audit History | RevReply | MySQL | Traceability |
+
+The only data cached temporarily during processing is the workflow context (thread, parsed attachments and intermediate processing state). This data exists only to support retries and avoid repeated Gmail API calls during a single workflow execution. It is discarded once processing completes.
+
+---
+
+## Data Model
+
+The database is intentionally small. Since Gmail already stores mailbox data, the database only needs to represent RevReply's own state.
+
+> **Entity Relationship Diagram**
+
+entities:
+
+```
+User
+ ├── id
+ ├── name
+ └── email
+
+ConnectedAccount
+ ├── id
+ ├── user_id
+ ├── gmail_email
+ ├── access_token
+ ├── refresh_token
+ ├── watch_expiration
+ └── last_history_id
+
+Workflow
+ ├── id
+ ├── connected_account_id
+ ├── thread_id
+ ├── latest_message_id
+ ├── status
+ ├── started_at
+ └── completed_at
+
+Classification
+ ├── id
+ ├── workflow_id
+ ├── intent
+ ├── confidence
+ ├── risk
+ ├── generated_draft
+ ├── prompt_version
+ └── model_version
+
+AuditLog
+ ├── id
+ ├── workflow_id
+ ├── event
+ ├── metadata
+ ├── created_at
+```
+
+### Why these entities?
+
+**ConnectedAccount**
+
+A single RevReply user may connect multiple Gmail accounts. OAuth credentials, watch metadata and synchronization state belong to the connected account rather than the user.
+
+**Workflow**
+
+Each incoming email notification creates a workflow execution. This allows retries, resumable processing and workflow-level observability.
+
+**Classification**
+
+Stores the AI output instead of recomputing it every time the dashboard is opened. It also provides a historical record for evaluation and future model improvements.
+
+**AuditLog**
+
+Every significant workflow event is recorded for debugging and traceability.
+
+Examples include:
+
+- Gmail notification received
+- Context created
+- AI classification completed
+- Draft created
+- Auto reply sent
+- Workflow failed
+- Retry executed
+
+# Email Processing Lifecycle
+
+The following sequence describes the complete journey of a single incoming email.
+
+> Email Processing Sequence
+```
+Customer
+        │
+        ▼
+      Gmail
+        │
+ Push Notification
+        │
+        ▼
+RevReply Ingestion
+        │
+        ▼
+ Queue Job Created
+        │
+        ▼
+ Queue Worker
+        │
+        ▼
+ Fetch Thread
+        │
+        ▼
+ Build Context
+        │
+        ▼
+ AI Pipeline
+        │
+        ▼
+ Decision Engine
+        │
+        ├───────────────┐
+        │               │
+        ▼               ▼
+ Create Draft      Auto Reply
+        │               │
+        └──────┬────────┘
+               ▼
+          Update Dashboard
+```
+### Workflow
+
+1. Gmail receives a new email.
+
+2. Gmail publishes a push notification through Pub/Sub.
+
+3. The ingestion endpoint validates the notification, creates a queue job and immediately acknowledges Pub/Sub.
+
+4. A worker picks up the job and retrieves the latest conversation using Gmail's History API.
+
+5. The Context Builder fetches
+
+- Thread
+- Attachments
+- User Preferences
+
+and converts them into a structured context object.
+
+6. The AI Pipeline performs a single structured inference and returns
+
+- Intent
+- Confidence
+- Risk
+- Suggested Draft
+
+7. The Decision Engine applies deterministic business rules.
+
+Possible outcomes are
+
+- Auto Reply
+- Draft
+- Escalation
+- Ignore
+
+8. The selected action is executed through the Gmail API.
+
+9. Workflow state and audit history are recorded before marking the workflow complete.
+
+
+### Workflow States
+
+Each incoming email progresses through a small number of deterministic workflow states.
+
+Received
+
+↓
+
+Queued
+
+↓
+
+Processing
+
+↓
+
+AI Complete
+
+↓
+
+Decision Complete
+
+↓
+
+Draft Created
+
+↓
+
+Waiting Approval
+
+↓
+
+Sent
+
+or
+
+Failed
+
+Representing the workflow explicitly makes retries, observability and operational debugging significantly simpler than relying only on application logs.
+
+
+# Failure Handling
+
+Every stage of the workflow should either complete successfully or fail in a way that allows processing to resume without losing emails or producing duplicate actions.
+
+| Failure | Impact | Recovery Strategy |
+|----------|--------|-------------------|
+| Gmail Push notification delivered more than once | Duplicate processing | Idempotency using `historyId` together with `threadId` and latest message ID |
+| Gmail watch expires | No new notifications | Scheduled job renews the Gmail watch before expiration |
+| OAuth access token expires | Gmail API requests fail | Refresh access token automatically using the stored refresh token |
+| Refresh token revoked | Gmail account disconnected | Mark account as disconnected and notify the user to reconnect |
+| Queue worker crashes | Workflow interrupted | Queue automatically retries the job |
+| Gmail API temporarily unavailable | Context cannot be built | Retry using exponential backoff |
+| LLM API timeout | Classification unavailable | Retry once, then create a draft for manual review |
+| LLM returns malformed JSON | Decision cannot be parsed | Retry with structured-output prompt + the parsing error, otherwise escalate for manual review |
+| Draft creation fails | Reply cannot be saved | Retry the Gmail API call before marking workflow as failed |
+| Database temporarily unavailable | Workflow state cannot be recorded | Retry database operation before failing the workflow |
+| Dashboard unavailable | User cannot view workflow | Email processing continues independently; dashboard reflects latest workflow state once available |
+
+---
+
+## Real User Experience Failure Modes
+
+
+| User Scenario | Mitigation |
+|----------|------------|
+| Customer sends another email while the workflow is still processing | Before taking an action, compare the latest `historyId`. If the conversation has changed, restart processing using the latest thread. |
+| Duplicate Gmail notification | Ignore duplicate workflows using idempotency keys. |
+| Duplicate draft creation | Check whether a draft already exists before creating another one. |
+| Wrong customer thread | Always retrieve the latest Gmail thread immediately before AI processing. |
+| Auto-reply loop | Ignore emails marked with `Auto-Submitted`, and include the appropriate `Auto-Submitted: auto-replied` header on outgoing replies. |
+| AI produces an unsafe or low-confidence response | Decision Engine routes the workflow to Draft or Escalation instead of sending automatically. |
+| Human edits a draft while a retry is executing | Workflow verifies current state before applying changes, preventing stale updates from overwriting user edits. |
+
+---
+
+## Idempotency
+
+The system assumes that external systems may deliver duplicate notifications.
+
+Instead of trying to prevent duplicates, the workflow is designed so that processing the same notification multiple times produces the same final result.
+
+The idempotency key is derived from the Gmail `historyId`, together with the latest message identifier within the thread.
+
+This guarantees that retries, duplicate Pub/Sub deliveries and worker restarts do not result in duplicate replies or duplicate drafts.
+
+---
+
+## Retry Strategy
+
+Retries are used only for transient failures.
+
+- Gmail API failures use exponential backoff.
+- Queue failures rely on the queue's retry mechanism.
+- LLM failures are retried once before escalating.
+- Permanent failures (revoked OAuth, invalid permissions, deleted mailbox) are not retried indefinitely and instead require user intervention.
+
+This keeps the system responsive while preventing infinite retry loops.
+
+
+
+# Scaling Strategy
+
+The implementation demonstrates a single Gmail account, but the architecture is designed so that scaling primarily means adding more workers rather than redesigning the system.
+
+Because the workflow is asynchronous and Gmail remains the source of truth, each email notification can be processed independently.
+
+The system therefore scales horizontally at the worker layer.
+
+---
+
+## Stateless Components
+
+Every processing component is stateless.
+
+A worker receives a queue job, reconstructs the latest state from Gmail, processes the workflow and exits.
+
+No worker depends on local memory from previous executions.
+
+This allows additional workers to be added without changing application logic.
+
+---
+
+## Queue-Based Processing
+
+The queue naturally absorbs traffic spikes.
+
+For example, if hundreds of Gmail notifications arrive simultaneously, they are buffered in the queue while workers continue processing at their own rate.
+
+Instead of overwhelming the application, load is smoothed over time.
+
+Adding more workers increases throughput without changing the architecture.
+
+---
+
+## Gmail API Limits
+
+The Gmail API is an external dependency and therefore becomes the primary scaling constraint rather than the application itself.
+
+To operate reliably, the system should:
+
+- Retry transient failures using exponential backoff.
+- Respect Gmail API quotas.
+- Avoid unnecessary API calls by retrieving only the required thread.
+- Minimize repeated fetches during a single workflow execution.
+
+---
+
+## AI Provider Limits
+
+The LLM provider is another external bottleneck.
+
+The architecture isolates AI processing behind a single component, making it possible to:
+
+- Switch providers.
+- Upgrade models.
+- Introduce batching.
+- Introduce fallback models.
+
+without affecting the rest of the workflow.
+
+---
+
+## Database Growth
+
+The database stores only RevReply-owned state rather than mailbox contents.
+
+As a result, database growth is proportional to workflow history instead of email volume.
+
+This keeps storage requirements relatively small even as the number of connected Gmail accounts increases.
+
+---
+
+## Future Scaling
+
+If production traffic grows significantly, the architecture can evolve without major redesign.
+
+Possible improvements include:
+
+- Multiple queue workers
+- Distributed queue infrastructure
+- Dedicated observability platform
+- Separate AI worker pool
+- Evaluation pipeline for continuous quality monitoring
+- Multi-region deployment
+
+None of these require changes to the overall workflow because component boundaries remain unchanged.
+
+## Deployment Story
+
+The system is deployed as a stateless Laravel application with independent queue workers.
+
+Because expensive operations (Gmail fetches, AI inference and draft generation) execute asynchronously, the API remains lightweight while workers scale horizontally.
+
+A typical deployment consists of:
+
+- Laravel API
+- Queue Workers
+- MySQL
+- Queue
+- Gmail Pub/Sub
+- LLM Provider
+
+Only the queue workers require horizontal scaling as traffic grows. Since workers are stateless, additional instances can be added without changing application logic.
+
+## Dashboard
+
+The dashboard is workflow-centric rather than inbox-centric.
+
+Each workflow card displays:
+
+- Customer
+- Conversation summary
+- Intent
+- Confidence
+- Risk
+- Current workflow state
+- Suggested action
+- Timestamp
+
+Selecting a workflow expands the full Gmail thread together with the generated draft.
+
+At the top level, the dashboard also exposes operational summaries:
+
+- Drafts awaiting approval
+- Auto replies sent
+- Escalated conversations
+- Failed workflows
+- Average processing latency
+
+# Observability
+
+The system is designed so that every workflow execution leaves enough information behind to reconstruct **what happened**, **why it happened**, and **where it failed** without replaying the entire request.
+
+Rather than treating observability as a separate subsystem, it is built into the workflow itself.
+
+---
+
+## Workflow State
+
+Every incoming email creates a Workflow record.
+
+The workflow progresses through deterministic states.
+
+```
+Received
+↓
+
+Queued
+↓
+
+Context Built
+↓
+
+AI Complete
+↓
+
+Decision Complete
+↓
+
+Draft Created
+
+or
+
+Sent
+
+or
+
+Failed
+```
+
+Because every state transition is persisted, the current status of every email can be queried directly from the database.
+
+Example questions that can be answered immediately:
+
+- Which workflows are currently processing?
+- Which workflows failed?
+- Which workflows are waiting for human approval?
+- What stage is currently the bottleneck?
+
+---
+
+## Audit Trail
+
+Every significant action performed during processing creates an Audit Log entry.
+
+Example events:
+
+- Gmail notification received
+- Queue job created
+- Thread fetched
+- AI inference completed
+- Decision generated
+- Draft created
+- Auto reply sent
+- Retry executed
+- Workflow failed
+
+Each event contains
+
+- Workflow ID
+- Timestamp
+- Event Type
+- Metadata
+- Correlation ID
+
+This provides a complete chronological history for every processed email.
+
+---
+
+## Correlation IDs
+
+Each workflow receives a Correlation ID when it is first ingested.
+
+That identifier is propagated through:
+
+- Queue Job
+- Context Builder
+- AI Pipeline
+- Decision Engine
+- Gmail Actions
+
+Searching a single Correlation ID reconstructs the complete processing path of one email.
+
+---
+
+## Operational Metrics
+
+Most operational metrics are derived directly from the Workflow and Audit tables rather than maintained separately.
+
+| Metric | Derived From |
+|---------|--------------|
+| Emails Processed | Workflow table |
+| Processing Latency | Workflow.started_at → completed_at |
+| Queue Wait Time | Audit events (Queued → Processing) |
+| AI Latency | Audit events (AI Started → AI Completed) |
+| Draft Rate | Classification table |
+| Auto Reply Rate | Classification table |
+| Escalation Rate | Classification table |
+| Workflow Failure Rate | Workflow status |
+| Retry Count | Audit events |
+| Gmail API Failures | Audit events |
+| OAuth Refresh Failures | Audit events |
+
+Because these metrics are derived from persisted workflow history, historical trends can be analyzed without requiring external monitoring infrastructure.
+
+---
+
+## Production Monitoring
+
+For the purposes of this assignment, metrics can be queried directly from MySQL.
+
+In production, the same workflow and audit events would additionally be exported to an observability platform (for example OpenTelemetry, Prometheus/Grafana or Datadog) for dashboards, alerting and long-term retention.
+
+The architecture does not depend on a particular monitoring tool because observability is produced by the workflow itself rather than by the infrastructure.
+
+# Deliberately Left Out
+
+The goal of this assignment was to design a production-ready Gmail processing pipeline, not to build every surrounding product feature. During the design process I deliberately limited the scope whenever it didn't change the core architecture.
+
+The following decisions were made intentionally.
+
+| Decision | Why it was left out |
+|----------|----------------------|
+| **User Authentication** | Authentication is assumed to already exist. The implementation starts with an authenticated RevReply user so the focus remains on Gmail processing and AI orchestration. |
+| **Organization / RBAC** | The assignment describes a single user connecting Gmail accounts. Multi-organization access control doesn't affect the email processing pipeline and was intentionally kept out of scope. |
+| **Google Workspace Administration** | Gmail API works for both personal Gmail and Google Workspace mailboxes. Domain-level administration and organization management are product concerns rather than architectural concerns for this assignment. |
+| **Sensitive Email Filtering** | I considered filtering banking emails, OTPs and other sensitive messages. Instead, I assumed users connect a mailbox intended for sales communication. This keeps the processing pipeline simpler while avoiding incorrect filtering decisions. |
+| **Mailbox Synchronization** | Emails, threads, attachments and drafts are never copied into our database. Gmail remains the source of truth and data is fetched when needed. |
+| **Refresh Token Recovery UX** | If a refresh token is revoked, the backend detects the failure and marks the account as disconnected. A complete notification and reconnect experience would be one of the first product features added later, but it was intentionally left out of this implementation. |
+| **Evaluation Pipeline** | The architecture stores workflow history and AI decisions so evaluations can be added later. The implementation itself focuses only on inference. |
+| **Multi-stage AI Workflow** | I intentionally chose a single structured prompt instead of classifier → critic → evaluator workflows. Additional reasoning stages should only be introduced if production evaluations show they improve quality enough to justify the added latency and complexity. |
+| **Additional Context Sources** | The Context Builder was designed so CRM systems, internal knowledge bases and customer history can be plugged in later. Since the assignment doesn't require them, the current implementation only uses Gmail context and user configuration. |
