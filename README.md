@@ -7,6 +7,13 @@ The architecture is split into a small number of independent responsibilities. E
 > **High-Level Architecture**
 
 ```
+                        +-----------------------+
+                        | Connected Account     |
+                        | Manager               |
+                        +-----------------------+
+                                   │
+                                   │
+                                   ▼
                            +----------------+
                            |     Gmail      |
                            +----------------+
@@ -51,6 +58,7 @@ The architecture is split into a small number of independent responsibilities. E
 
 I intentionally separated the system by responsibility instead of technology.
 
+- **Connected Account Manager** is responsible for the integration between RevReply and Gmail. It manages Gmail OAuth, access and refresh tokens, Gmail watch subscriptions, and multiple connected Gmail accounts per user.
 - **Ingestion** is responsible only for reliably receiving Gmail events (or any other events like whatsapp, outlook, slack, etc, we will add more interfaces in this system, this is extensible).
 - **Context Builder** gathers everything required for reasoning, including the email thread, attachments, and user configs (again limited to gmail for now, but is extensible ).
 - **AI Pipeline** converts unstructured conversation into structured information (intent, confidence, risk, draft).
