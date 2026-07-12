@@ -197,6 +197,18 @@ Push Notifications
 - Requires Pub/Sub.
 - Watches must be renewed periodically.
 
+**How Gmail Watch Actually Works**
+
+The `watch()` API is a lease-based registration, not a persistent connection.
+
+When we call `users.watch()`, Gmail registers internally that it should publish notifications to our Pub/Sub topic for the next 7 days. After calling `watch()`, Gmail uses its own internal service account to publish to Pub/Sub. Our OAuth token is not involved in notification delivery at all. Even if the access token expires one hour after calling `watch()`, notifications continue flowing for the full 7 days.
+
+When the 7 days expire, Gmail silently stops publishing. There is no error, no notification and no alert. The system simply goes quiet.
+
+To prevent this, a scheduled job calls `watch()` again daily. Since `watch()` is idempotent, calling it again just extends the expiration. Running daily gives a 6-day safety buffer. Even if the cron fails for 5 consecutive days, there is still 1 day remaining.
+
+If a watch does expire before renewal, the system calls `history.list` with the last known `historyId` to recover any emails that arrived during the gap. Gmail retains history for approximately 30 days, so gaps of up to a month can be recovered.
+
 ---
 
 ### Decision 5 — Gmail is the Source of Truth
@@ -339,8 +351,54 @@ This reduces synchronization complexity and keeps Gmail as the single source of 
 | AI Decision | RevReply | MySQL | Workflow history |
 | Workflow State | RevReply | MySQL | Resumable processing |
 | Audit History | RevReply | MySQL | Traceability |
+| Processed Notifications | RevReply | MySQL | Idempotency across restarts and workers |
 
 The only data cached temporarily during processing is the workflow context (thread, parsed attachments and intermediate processing state). This data exists only to support retries and avoid repeated Gmail API calls during a single workflow execution. It is discarded once processing completes.
+
+---
+
+## Storage Layers
+
+Not every piece of data needs to be in MySQL. The system uses three storage layers, each chosen based on whether the data must survive restarts, must be shared across workers, or is only needed during a single workflow execution.
+
+**Worker Memory**
+
+Data that exists only during a single workflow execution. It is created when processing begins and discarded when processing completes.
+
+- Gmail thread context
+- Parsed attachment text
+- Intermediate AI inputs
+- AI prompt templates
+- Decision Engine business rules
+
+This data does not need to survive restarts because the queue will retry the job, and the worker will reconstruct the context from Gmail.
+
+**Redis**
+
+Data that must be shared across workers but can be regenerated if lost. Redis acts as a shared cache to avoid unnecessary database reads and external API calls.
+
+- OAuth access tokens (cached with a 50-minute TTL to avoid refreshing on every Gmail request)
+- User preferences (cached with a short TTL since they are read on every workflow but rarely change)
+- Rate limit counters for Gmail API quotas
+- Queue jobs (Laravel's Redis queue driver is significantly faster than the MySQL queue driver)
+- Workflow processing locks (prevents two workers from processing the same thread concurrently)
+- Dashboard sessions
+
+If Redis is flushed or restarted, access tokens are re-fetched from Google, preferences are re-read from MySQL and queue jobs are re-dispatched. Nothing is permanently lost.
+
+**MySQL**
+
+Data that cannot be reconstructed and must survive restarts, deployments and infrastructure failures.
+
+- OAuth refresh tokens (irreplaceable without user re-authorization)
+- ConnectedAccount records
+- Workflow records
+- Classifications
+- AuditLog entries
+- Processed notification idempotency keys
+- Watch expiration and last history ID
+
+The distinction is straightforward. If losing the data means a user has to take action or an email gets processed twice, it belongs in MySQL. If losing the data means one extra API call or a cache miss, it belongs in Redis or worker memory.
 
 ---
 
@@ -392,6 +450,12 @@ AuditLog
  ├── event
  ├── metadata
  ├── created_at
+
+ProcessedNotification
+ ├── id
+ ├── idempotency_key (unique)
+ ├── connected_account_id
+ └── processed_at
 ```
 
 ### Why these entities?
@@ -421,6 +485,14 @@ Examples include:
 - Auto reply sent
 - Workflow failed
 - Retry executed
+
+**ProcessedNotification**
+
+Stores idempotency keys for Gmail notifications that have already been processed. The idempotency key is derived from the connected account, `historyId` and latest message ID.
+
+This table must be in MySQL rather than an in-memory cache because Pub/Sub can retry unacknowledged messages for up to 7 days. Worker restarts, horizontal scaling across multiple workers and cache eviction under memory pressure all make in-memory idempotency unreliable. A database table with a unique constraint guarantees that even if two workers race on the same notification, exactly one processes it.
+
+A scheduled job prunes entries older than 14 days, which is beyond the 7-day Pub/Sub retention window. Even at high email volumes this table remains small.
 
 # Email Processing Lifecycle
 
@@ -586,7 +658,15 @@ The system assumes that external systems may deliver duplicate notifications.
 
 Instead of trying to prevent duplicates, the workflow is designed so that processing the same notification multiple times produces the same final result.
 
-The idempotency key is derived from the Gmail `historyId`, together with the latest message identifier within the thread.
+The idempotency key is derived from the connected account ID, Gmail `historyId` and the latest message identifier within the thread.
+
+**Why this requires a database table instead of a cache**
+
+Pub/Sub retries unacknowledged messages with exponential backoff capped at 10 minutes, and continues retrying for up to 7 days before dropping the message. This creates a window far too long for in-memory caching to be reliable.
+
+In-memory caches do not survive worker restarts. When workers scale horizontally, each worker has its own memory, so a duplicate landing on a different worker would not be caught. Even Redis with a short TTL becomes unsafe if the TTL expires before Pub/Sub stops retrying.
+
+The `ProcessedNotification` table uses an INSERT with a unique constraint on the idempotency key. The database enforces atomicity, so even if two workers race on the same notification, exactly one succeeds. This is the only approach that reliably survives restarts, multiple workers and the full Pub/Sub retry window.
 
 This guarantees that retries, duplicate Pub/Sub deliveries and worker restarts do not result in duplicate replies or duplicate drafts.
 
