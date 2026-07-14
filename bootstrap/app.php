@@ -15,6 +15,15 @@ return Application::configure(basePath: dirname(__DIR__))
             Route::middleware('api')
                 ->prefix('gmail')
                 ->group(base_path('routes/gmail.php'));
+
+            Route::middleware(['web'])
+                ->prefix('auth/gmail')
+                ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class)
+                ->group(base_path('routes/oauth.php'));
+
+            Route::middleware('api')
+                ->prefix('api')
+                ->group(base_path('routes/accounts.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
