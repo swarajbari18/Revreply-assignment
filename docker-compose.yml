@@ -1,0 +1,36 @@
+# Local MySQL. Start: docker compose up -d
+# App DB: revreply | Test DB: revreply_test (PHPUnit)
+# Extra DB is created only when MySQL first initializes an empty data volume.
+services:
+  mysql:
+    image: mysql:8.4
+    container_name: revreply-mysql
+    ports:
+      - "3306:3306"
+    environment:
+      MYSQL_ROOT_PASSWORD: secret
+      MYSQL_DATABASE: revreply
+      MYSQL_USER: revreply
+      MYSQL_PASSWORD: secret
+    volumes:
+      - revreply_mysql_data:/var/lib/mysql
+    configs:
+      - source: mysql_init
+        target: /docker-entrypoint-initdb.d/01-test-db.sql
+    healthcheck:
+      test: ["CMD", "mysqladmin", "ping", "-h", "127.0.0.1", "-psecret"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+      start_period: 20s
+
+configs:
+  mysql_init:
+    content: |
+      CREATE DATABASE IF NOT EXISTS revreply_test;
+      GRANT ALL PRIVILEGES ON revreply.* TO 'revreply'@'%';
+      GRANT ALL PRIVILEGES ON revreply_test.* TO 'revreply'@'%';
+      FLUSH PRIVILEGES;
+
+volumes:
+  revreply_mysql_data:
