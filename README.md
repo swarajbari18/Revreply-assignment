@@ -58,8 +58,8 @@ The architecture is split into a small number of independent responsibilities. E
 
 I intentionally separated the system by responsibility instead of technology.
 
-- **Connected Account Manager** is responsible for the integration between RevReply and Gmail. It manages Gmail OAuth, access and refresh tokens, Gmail watch subscriptions, and multiple connected Gmail accounts per user.
-- **Ingestion** is responsible only for reliably receiving Gmail events (or any other events like whatsapp, outlook, slack, etc, we will add more interfaces in this system, this is extensible).
+- **Connected Account Manager** is responsible for the integration between RevReply and Gmail. It manages Gmail OAuth, access and refresh tokens, Gmail watch subscription registration and renewal, and multiple connected Gmail accounts per user. Gap recovery (recovering missed emails when a watch expires or the service goes down) is explicitly out of scope for this component — it belongs to the Ingestion Component.
+- **Ingestion** is responsible for reliably receiving Gmail events and protecting them onto the queue. This includes the normal push notification path as well as **gap recovery**: when a watch expires before renewal or the service experiences downtime, the Ingestion Component uses the `last_history_id` stored per `ConnectedAccount` to call Gmail's History API, recover any missed messages, and enqueue them identically to live push notifications. This makes gap recovery a consequence of the same ingestion behavior rather than a separate system. The `last_history_id` is maintained by the Connected Account Manager and consumed by the Ingestion Component.
 - **Context Builder** gathers everything required for reasoning, including the email thread, attachments, and user configs (again limited to gmail for now, but is extensible ).
 - **AI Pipeline** converts unstructured conversation into structured information (intent, confidence, risk, draft).
 - **Decision Engine** contains deterministic business logic. The LLM recommends; it never decides whether an email is sent automatically.
@@ -94,6 +94,7 @@ Whenever I had to choose between introducing another component and keeping the a
 | One AI prompt            | Multi-agent workflow              | Lower latency                                    |
 | Business rules           | AI decides                        | Deterministic behaviour                          |
 | Queue durability         | Persisting incoming notifications | Fewer writes, queue already provides durability  |
+| Queue-dispatched watch renewal jobs | Running renewal synchronously in the scheduler command | Each account renews independently. One account failing does not affect others. Retries and backoff are owned by the queue, not the scheduler command. The command is a dispatcher only. |
 
 ---
 
@@ -213,9 +214,13 @@ When we call `users.watch()`, Gmail registers internally that it should publish 
 
 When the 7 days expire, Gmail silently stops publishing. There is no error, no notification and no alert. The system simply goes quiet.
 
-To prevent this, a scheduled job calls `watch()` again daily. Since `watch()` is idempotent, calling it again just extends the expiration. Running daily gives a 6-day safety buffer. Even if the cron fails for 5 consecutive days, there is still 1 day remaining.
+To prevent this, a daily scheduled Artisan command queries for all connected accounts whose `watch_expiration` is either null (watch was never registered) or falls within the next 48 hours. For each of those accounts, the command dispatches an independent queue job and exits. The command itself does not call the Gmail API — that is the job's responsibility.
 
-If a watch does expire before renewal, the system calls `history.list` with the last known `historyId` to recover any emails that arrived during the gap. Gmail retains history for approximately 30 days, so gaps of up to a month can be recovered.
+Each queue job receives a single `ConnectedAccount`, calls `GmailWatchService::watch()`, and handles its own retries with exponential backoff (waiting 5 seconds before the first retry, 10 seconds before the second, 20 seconds before the third). After all retries are exhausted the job is marked as failed and recorded in the `failed_jobs` table with the full error context. Because each account is its own independent job, one account failing has no effect on any other account's job.
+
+The 48-hour renewal window gives a 24-hour failure tolerance: if the daily job fails to run on day one, the next day's run still catches the same accounts because they are still within 48 hours of expiry. Accounts with a freshly registered watch (6 or 7 days remaining) are not touched.
+
+If a watch does expire before renewal, gap recovery is handled by the Ingestion Component using the `last_history_id` stored in `ConnectedAccount`. See the Ingestion Component description and the failure handling table for the full recovery strategy.
 
 ---
 
@@ -632,7 +637,8 @@ Every stage of the workflow should either complete successfully or fail in a way
 | Failure | Impact | Recovery Strategy |
 |----------|--------|-------------------|
 | Gmail Push notification delivered more than once | Duplicate processing | Idempotency using `historyId` together with `threadId` and latest message ID |
-| Gmail watch expires | No new notifications | Scheduled job renews the Gmail watch before expiration |
+| Gmail watch expires | No new notifications | Scheduled job (Connected Account Manager) renews the Gmail watch before expiration. Job runs daily, targeting accounts whose watch expires within the next 48 hours, giving a 24-hour failure tolerance. |
+| Gmail watch expires before renewal job can run (e.g. multiple consecutive cron failures or service downtime) | Emails missed during the gap | Gap recovery is the responsibility of the Ingestion Component. It compares the current Gmail `historyId` against `last_history_id` stored in `ConnectedAccount`, calls Gmail's History API to recover missed messages, and enqueues them identically to live push notifications. The `last_history_id` is reliably stored and updated by the Connected Account Manager on every watch registration and renewal. |
 | OAuth access token expires | Gmail API requests fail | Refresh access token automatically using the stored refresh token |
 | Refresh token revoked | Gmail account disconnected | Mark account as disconnected and notify the user to reconnect |
 | Queue worker crashes | Workflow interrupted | Queue automatically retries the job |

@@ -11,7 +11,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        //
+        $this->app->singleton(\Google\Client::class, fn () => \App\Services\Gmail\GmailClientFactory::make());
     }
 
     /**
