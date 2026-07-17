@@ -9,3 +9,5 @@ Artisan::command('inspire', function () {
 })->purpose('Display an inspiring quote');
 
 Schedule::command('watches:renew')->daily()->withoutOverlapping();
+Schedule::command('gaps:recover')->dailyAt('02:00')->withoutOverlapping();
+Schedule::command('notifications:prune')->dailyAt('03:00')->withoutOverlapping();

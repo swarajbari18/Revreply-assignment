@@ -31,6 +31,17 @@ class ConnectedAccount extends Model
     use HasFactory;
 
 
+    protected static function booted(): void
+    {
+        static::saved(function (ConnectedAccount $account) {
+            \Illuminate\Support\Facades\Cache::forget('ingestion_account:' . $account->gmail_email);
+        });
+
+        static::deleted(function (ConnectedAccount $account) {
+            \Illuminate\Support\Facades\Cache::forget('ingestion_account:' . $account->gmail_email);
+        });
+    }
+
     protected function casts(): array
     {
         return [

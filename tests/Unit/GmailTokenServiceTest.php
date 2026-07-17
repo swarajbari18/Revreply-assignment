@@ -60,7 +60,6 @@ class GmailTokenServiceTest extends TestCase
         ]);
 
         $mockClient = Mockery::mock(Client::class);
-        $mockClient->shouldReceive('setAccessToken')->once();
         $mockClient->shouldReceive('fetchAccessTokenWithRefreshToken')
             ->with('valid-refresh-token')
             ->once()
@@ -87,7 +86,6 @@ class GmailTokenServiceTest extends TestCase
         ]);
 
         $mockClient = Mockery::mock(Client::class);
-        $mockClient->shouldReceive('setAccessToken')->once();
         $mockClient->shouldReceive('fetchAccessTokenWithRefreshToken')
             ->once()
             ->andReturn([
@@ -118,7 +116,6 @@ class GmailTokenServiceTest extends TestCase
         ]);
 
         $mockClient = Mockery::mock(Client::class);
-        $mockClient->shouldReceive('setAccessToken')->once();
         $mockClient->shouldReceive('fetchAccessTokenWithRefreshToken')
             ->once()
             ->andReturn([

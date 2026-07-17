@@ -480,6 +480,9 @@ A single RevReply user may connect multiple Gmail accounts. OAuth credentials, w
 **Workflow**
 
 Each incoming email notification creates a workflow execution. This allows retries, resumable processing and workflow-level observability.
+- **`thread_id` & `latest_message_id`**: These fields track the Gmail conversation thread and message ID.
+  - *Gap Recovery case:* These fields are populated immediately at creation time because the History API response already contains the message details.
+  - *Standard Webhook case:* These fields are initialized as `NULL` to keep the ingestion HTTP response latency low. They are populated asynchronously by the queue worker when retrieving conversation details from Gmail.
 
 **Classification**
 
@@ -501,7 +504,7 @@ Examples include:
 
 **ProcessedNotification**
 
-Stores idempotency keys for Gmail notifications that have already been processed. The idempotency key is derived from the connected account, `historyId` and latest message ID.
+Stores idempotency keys for Gmail notifications that have already been processed. The idempotency key is derived from the Gmail email address and `historyId`. These are the only two fields present in the decoded Pub/Sub notification payload, making them the natural key — available immediately at ingestion time before any database lookup is required.
 
 This table must be in MySQL rather than an in-memory cache because Pub/Sub can retry unacknowledged messages for up to 7 days. Worker restarts, horizontal scaling across multiple workers and cache eviction under memory pressure all make in-memory idempotency unreliable. A database table with a unique constraint guarantees that even if two workers race on the same notification, exactly one processes it.
 
@@ -636,7 +639,7 @@ Every stage of the workflow should either complete successfully or fail in a way
 
 | Failure | Impact | Recovery Strategy |
 |----------|--------|-------------------|
-| Gmail Push notification delivered more than once | Duplicate processing | Idempotency using `historyId` together with `threadId` and latest message ID |
+| Gmail Push notification delivered more than once | Duplicate processing | Idempotency using the Gmail email address and `historyId` — the two fields present in every Pub/Sub notification payload |
 | Gmail watch expires | No new notifications | Scheduled job (Connected Account Manager) renews the Gmail watch before expiration. Job runs daily, targeting accounts whose watch expires within the next 48 hours, giving a 24-hour failure tolerance. |
 | Gmail watch expires before renewal job can run (e.g. multiple consecutive cron failures or service downtime) | Emails missed during the gap | Gap recovery is the responsibility of the Ingestion Component. It compares the current Gmail `historyId` against `last_history_id` stored in `ConnectedAccount`, calls Gmail's History API to recover missed messages, and enqueues them identically to live push notifications. The `last_history_id` is reliably stored and updated by the Connected Account Manager on every watch registration and renewal. |
 | OAuth access token expires | Gmail API requests fail | Refresh access token automatically using the stored refresh token |
@@ -672,7 +675,7 @@ The system assumes that external systems may deliver duplicate notifications.
 
 Instead of trying to prevent duplicates, the workflow is designed so that processing the same notification multiple times produces the same final result.
 
-The idempotency key is derived from the connected account ID, Gmail `historyId` and the latest message identifier within the thread.
+The idempotency key is derived from the Gmail email address and `historyId`. These are the only two fields present in the decoded Pub/Sub notification payload, making them the natural key — available immediately at ingestion time before any database lookup is required.
 
 **Why this requires a database table instead of a cache**
 
@@ -795,9 +798,9 @@ Because expensive operations (Gmail fetches, AI inference and draft generation) 
 A typical deployment consists of:
 
 - Laravel API
-- Queue Workers
+- Queue Workers (managed in production using Laravel Horizon to dynamically scale native OS worker processes based on queue metrics, monitored and kept alive by the Linux Supervisor process manager)
 - MySQL
-- Queue
+- Queue (Redis)
 - Gmail Pub/Sub
 - LLM Provider
 

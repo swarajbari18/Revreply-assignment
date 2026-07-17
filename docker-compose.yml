@@ -24,6 +24,19 @@ services:
       retries: 30
       start_period: 20s
 
+  redis:
+    image: redis:alpine
+    container_name: revreply-redis
+    ports:
+      - "6379:6379"
+    volumes:
+      - revreply_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 30
+
 configs:
   mysql_init:
     content: |
@@ -34,3 +47,4 @@ configs:
 
 volumes:
   revreply_mysql_data:
+  revreply_redis_data:

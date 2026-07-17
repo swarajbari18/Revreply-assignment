@@ -55,8 +55,6 @@ class GmailTokenService
             throw new \RuntimeException("Account {$account->id} has no refresh token.");
         }
 
-        $this->client->setAccessToken(['refresh_token' => $account->refresh_token]);
-
         $newTokenData = $this->client->fetchAccessTokenWithRefreshToken($account->refresh_token);
 
         if (isset($newTokenData['error'])) {
