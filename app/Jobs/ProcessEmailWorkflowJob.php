@@ -13,6 +13,8 @@ use Illuminate\Queue\InteractsWithQueue;
 use Illuminate\Queue\SerializesModels;
 use Illuminate\Support\Facades\Log;
 
+use App\Services\ContextBuilderService;
+
 class ProcessEmailWorkflowJob implements ShouldQueue
 {
     use Dispatchable, InteractsWithQueue, Queueable, SerializesModels;
@@ -22,9 +24,10 @@ class ProcessEmailWorkflowJob implements ShouldQueue
     public function __construct(
         public int $workflowId,
         public int $connectedAccountId
-    ) {}
+    ) {
+    }
 
-    public function handle(): void
+    public function handle(ContextBuilderService $contextBuilder): void
     {
         $workflow = Workflow::findOrFail($this->workflowId);
 
@@ -41,6 +44,17 @@ class ProcessEmailWorkflowJob implements ShouldQueue
                 'processed_at' => now()->toIso8601String(),
             ],
         ]);
+
+        $context = $contextBuilder->build($this->workflowId, $this->connectedAccountId);
+
+        if ($context === null) {
+            Log::info('ProcessEmailWorkflowJob: context building returned null, exiting cleanly.', [
+                'workflow_id' => $this->workflowId,
+            ]);
+            return;
+        }
+
+        Log::debug("ContextBuilderService: Context successfully built:\n" . json_encode($context->toArray(), JSON_PRETTY_PRINT));
     }
 
     public function backoff(): array

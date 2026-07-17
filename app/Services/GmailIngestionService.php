@@ -68,17 +68,24 @@ class GmailIngestionService
             ]);
             $this->recoverGap($account, $lastHistoryId);
 
-            if ($this->isAlreadyProcessed($gmailEmail, $historyId)) {
-                $account->refresh();
-                $currentLastHistoryId = $account->last_history_id;
-                if ($currentLastHistoryId === null || (int) $historyId > (int) $currentLastHistoryId) {
-                    $account->forceFill([
-                        'last_history_id' => $historyId,
-                    ])->save();
-                    $this->clearAccountCache($account->gmail_email);
-                }
-                return;
+            if (!$this->isAlreadyProcessed($gmailEmail, $historyId)) {
+                ProcessedNotification::create([
+                    'idempotency_key' => $this->buildIdempotencyKey($gmailEmail, $historyId),
+                    'connected_account_id' => $account->id,
+                    'processed_at' => now(),
+                ]);
             }
+
+            $account->refresh();
+            $currentLastHistoryId = $account->last_history_id;
+            if ($currentLastHistoryId === null || (int) $historyId > (int) $currentLastHistoryId) {
+                $account->forceFill([
+                    'last_history_id' => $historyId,
+                ])->save();
+                $this->clearAccountCache($account->gmail_email);
+            }
+
+            return;
         }
 
         $correlationId = (string) Str::uuid();
@@ -87,18 +94,14 @@ class GmailIngestionService
             'connected_account_id' => $account->id,
             'thread_id' => null,
             'latest_message_id' => null,
-            'status' => WorkflowStatus::Received,
+            'status' => WorkflowStatus::Queued,
             'correlation_id' => $correlationId,
             'started_at' => now(),
         ]);
 
         ProcessEmailWorkflowJob::dispatch($workflow->id, $account->id);
 
-        $workflow->update([
-            'status' => WorkflowStatus::Queued,
-        ]);
-
-        DB::transaction(function () use ($workflow, $account, $gmailEmail, $historyId, $correlationId) {
+        DB::transaction(function () use ($workflow, $account, $gmailEmail, $historyId, $correlationId, $lastHistoryId) {
             ProcessedNotification::create([
                 'idempotency_key' => $this->buildIdempotencyKey($gmailEmail, $historyId),
                 'connected_account_id' => $account->id,
@@ -112,6 +115,7 @@ class GmailIngestionService
                 'metadata' => [
                     'history_id' => $historyId,
                     'connected_account_id' => $account->id,
+                    'previous_history_id' => $lastHistoryId,
                 ],
             ]);
         });
@@ -257,16 +261,12 @@ class GmailIngestionService
             'connected_account_id' => $account->id,
             'thread_id' => $message->getThreadId(),
             'latest_message_id' => $message->getId(),
-            'status' => WorkflowStatus::Received,
+            'status' => WorkflowStatus::Queued,
             'correlation_id' => $correlationId,
             'started_at' => now(),
         ]);
 
         ProcessEmailWorkflowJob::dispatch($workflow->id, $account->id);
-
-        $workflow->update([
-            'status' => WorkflowStatus::Queued,
-        ]);
 
         DB::transaction(function () use ($workflow, $account, $historyId, $correlationId) {
             ProcessedNotification::create([

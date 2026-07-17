@@ -11,4 +11,16 @@ abstract class TestCase extends BaseTestCase
         parent::setUp();
         \Illuminate\Support\Facades\Cache::flush();
     }
+
+    protected function mockGmailClient(array $responses): void
+    {
+        $guzzleMock = new \GuzzleHttp\Client([
+            'handler' => \GuzzleHttp\HandlerStack::create(
+                new \GuzzleHttp\Handler\MockHandler($responses)
+            ),
+        ]);
+
+        $client = $this->app->make(\Google\Client::class);
+        $client->setHttpClient($guzzleMock);
+    }
 }

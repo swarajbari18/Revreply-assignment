@@ -40,35 +40,53 @@ class RecoverGmailGapsCommandTest extends TestCase
             'token_expires_at' => now()->addHour(),
         ]);
 
-        $guzzleMock = new GuzzleClient([
-            'handler' => HandlerStack::create(
-                new MockHandler([
-                    new GuzzleResponse(200, [], json_encode([
-                        'history' => [
-                            [
-                                'id' => '101',
-                                'messagesAdded' => [
-                                    [
-                                        'message' => [
-                                            'id' => 'msg123',
-                                            'threadId' => 'thread123',
-                                        ],
-                                    ],
-                                ],
+        $historyResponse = json_encode([
+            'history' => [
+                [
+                    'id' => '101',
+                    'messagesAdded' => [
+                        [
+                            'message' => [
+                                'id' => 'msg123',
+                                'threadId' => 'thread123',
                             ],
                         ],
-                        'historyId' => '101',
-                    ])),
-                    new GuzzleResponse(200, [], json_encode([
-                        'historyId' => '102',
-                        'expiration' => now()->addDays(7)->getTimestamp() * 1000,
-                    ])),
-                ])
-            ),
+                    ],
+                ],
+            ],
+            'historyId' => '101',
         ]);
 
-        $client = $this->app->make(Client::class);
-        $client->setHttpClient($guzzleMock);
+        $threadResponse = json_encode([
+            'id' => 'thread123',
+            'messages' => [
+                [
+                    'id' => 'msg123',
+                    'internalDate' => (string) (now()->getTimestamp() * 1000),
+                    'payload' => [
+                        'headers' => [
+                            ['name' => 'From', 'value' => 'sender@example.com'],
+                            ['name' => 'To', 'value' => 'expired@gmail.com'],
+                        ],
+                        'mimeType' => 'text/plain',
+                        'body' => [
+                            'data' => base64_encode('Hello!'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $watchResponse = json_encode([
+            'historyId' => '102',
+            'expiration' => (string) (now()->addDays(7)->getTimestamp() * 1000),
+        ]);
+
+        $this->mockGmailClient([
+            new GuzzleResponse(200, [], $historyResponse),
+            new GuzzleResponse(200, [], $threadResponse),
+            new GuzzleResponse(200, [], $watchResponse),
+        ]);
 
         $this->artisan('gaps:recover')->assertSuccessful();
 

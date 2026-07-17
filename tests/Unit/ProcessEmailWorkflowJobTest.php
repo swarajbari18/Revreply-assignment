@@ -41,8 +41,32 @@ class ProcessEmailWorkflowJobTest extends TestCase
     {
         $workflow = Workflow::factory()->create();
 
+        $threadResponse = json_encode([
+            'id' => $workflow->thread_id,
+            'messages' => [
+                [
+                    'id' => $workflow->latest_message_id,
+                    'internalDate' => (string) (now()->getTimestamp() * 1000),
+                    'payload' => [
+                        'headers' => [
+                            ['name' => 'From', 'value' => 'sender@example.com'],
+                            ['name' => 'To', 'value' => 'test@gmail.com'],
+                        ],
+                        'mimeType' => 'text/plain',
+                        'body' => [
+                            'data' => base64_encode('Hello!'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockGmailClient([
+            new \GuzzleHttp\Psr7\Response(200, [], $threadResponse),
+        ]);
+
         $job = new ProcessEmailWorkflowJob($workflow->id, $workflow->connected_account_id);
-        $job->handle();
+        $job->handle($this->app->make(\App\Services\ContextBuilderService::class));
 
         $this->assertDatabaseHas('audit_logs', [
             'workflow_id' => $workflow->id,

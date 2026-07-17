@@ -40,6 +40,48 @@ class GmailWebhookTest extends TestCase
             'last_history_id' => '100',
         ]);
 
+        $historyResponse = json_encode([
+            'history' => [
+                [
+                    'id' => '101',
+                    'messagesAdded' => [
+                        [
+                            'message' => [
+                                'id' => 'msg123',
+                                'threadId' => 'thread123',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'historyId' => '101',
+        ]);
+
+        $threadResponse = json_encode([
+            'id' => 'thread123',
+            'messages' => [
+                [
+                    'id' => 'msg123',
+                    'internalDate' => (string) (now()->getTimestamp() * 1000),
+                    'payload' => [
+                        'headers' => [
+                            ['name' => 'From', 'value' => 'sender@example.com'],
+                            ['name' => 'To', 'value' => 'test@gmail.com'],
+                        ],
+                        'mimeType' => 'text/plain',
+                        'body' => [
+                            'data' => base64_encode('Hello!'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockGmailClient([
+            new GuzzleResponse(200, [], $historyResponse),
+            new GuzzleResponse(200, [], $threadResponse),
+        ]);
+
         $payload = [
             'message' => [
                 'data' => base64_encode(json_encode([
@@ -55,7 +97,7 @@ class GmailWebhookTest extends TestCase
 
         $this->assertDatabaseHas('workflows', [
             'connected_account_id' => $account->id,
-            'status' => WorkflowStatus::Queued->value,
+            'status' => WorkflowStatus::ContextBuilt->value,
         ]);
 
         $workflow = Workflow::first();
@@ -195,31 +237,79 @@ class GmailWebhookTest extends TestCase
         // Provide an OAuth token for HTTP request
         $account->update(['access_token' => 'fake-access-token']);
 
-        $guzzleMock = new GuzzleClient([
-            'handler' => HandlerStack::create(
-                new MockHandler([
-                    new GuzzleResponse(200, [], json_encode([
-                        'history' => [
-                            [
-                                'id' => '101',
-                                'messagesAdded' => [
-                                    [
-                                        'message' => [
-                                            'id' => 'msg123',
-                                            'threadId' => 'thread123',
-                                        ],
-                                    ],
-                                ],
+        $historyCombined = json_encode([
+            'history' => [
+                [
+                    'id' => '101',
+                    'messagesAdded' => [
+                        [
+                            'message' => [
+                                'id' => 'msg123',
+                                'threadId' => 'thread123',
                             ],
                         ],
-                        'historyId' => '101',
-                    ])),
-                ])
-            ),
+                    ],
+                ],
+                [
+                    'id' => '102',
+                    'messagesAdded' => [
+                        [
+                            'message' => [
+                                'id' => 'msg456',
+                                'threadId' => 'thread456',
+                            ],
+                        ],
+                    ],
+                ],
+            ],
+            'historyId' => '102',
         ]);
 
-        $client = $this->app->make(Client::class);
-        $client->setHttpClient($guzzleMock);
+        $thread1 = json_encode([
+            'id' => 'thread123',
+            'messages' => [
+                [
+                    'id' => 'msg123',
+                    'internalDate' => (string) (now()->getTimestamp() * 1000),
+                    'payload' => [
+                        'headers' => [
+                            ['name' => 'From', 'value' => 'sender@example.com'],
+                            ['name' => 'To', 'value' => 'test@gmail.com'],
+                        ],
+                        'mimeType' => 'text/plain',
+                        'body' => [
+                            'data' => base64_encode('Hello 1!'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $thread2 = json_encode([
+            'id' => 'thread456',
+            'messages' => [
+                [
+                    'id' => 'msg456',
+                    'internalDate' => (string) (now()->getTimestamp() * 1000),
+                    'payload' => [
+                        'headers' => [
+                            ['name' => 'From', 'value' => 'sender@example.com'],
+                            ['name' => 'To', 'value' => 'test@gmail.com'],
+                        ],
+                        'mimeType' => 'text/plain',
+                        'body' => [
+                            'data' => base64_encode('Hello 2!'),
+                        ],
+                    ],
+                ],
+            ],
+        ]);
+
+        $this->mockGmailClient([
+            new GuzzleResponse(200, [], $historyCombined),
+            new GuzzleResponse(200, [], $thread1),
+            new GuzzleResponse(200, [], $thread2),
+        ]);
 
         $payload = [
             'message' => [
@@ -238,12 +328,14 @@ class GmailWebhookTest extends TestCase
             'connected_account_id' => $account->id,
             'thread_id' => 'thread123',
             'latest_message_id' => 'msg123',
+            'status' => WorkflowStatus::ContextBuilt->value,
         ]);
 
         $this->assertDatabaseHas('workflows', [
             'connected_account_id' => $account->id,
-            'thread_id' => null,
-            'latest_message_id' => null,
+            'thread_id' => 'thread456',
+            'latest_message_id' => 'msg456',
+            'status' => WorkflowStatus::ContextBuilt->value,
         ]);
 
         $this->assertDatabaseHas('processed_notifications', [

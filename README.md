@@ -28,25 +28,29 @@ The architecture is split into a small number of independent responsibilities. E
                          Queue (Durability Boundary)
                                    │
                                    ▼
-                    +-----------------------------+
-                    |      Context Builder        |
-                    +-----------------------------+
-                                   │
-                                   ▼
-                    +-----------------------------+
-                    |     AI Understanding        |
-                    +-----------------------------+
-                                   │
-                      Intent / Risk / Confidence
-                                   │
-                                   ▼
-                    +-----------------------------+
-                    |      Decision Engine        |
-                    +-----------------------------+
-                          │        │         │
-                 Auto Send │ Draft │ Escalate
-                          ▼        ▼         ▼
-                     Gmail API  Gmail API  Dashboard
+   ╔═══════════════════════════════════════════════════╗
+   ║              Workflow Job (Orchestrator)           ║
+   ║  ┌─────────────────────────────────────────────┐  ║
+   ║  │            Context Builder                  │  ║
+   ║  └─────────────────────────────────────────────┘  ║
+   ║                        │                          ║
+   ║                        ▼                          ║
+   ║  ┌─────────────────────────────────────────────┐  ║
+   ║  │            AI Understanding                 │  ║
+   ║  └─────────────────────────────────────────────┘  ║
+   ║                        │                          ║
+   ║           Intent / Risk / Confidence              ║
+   ║                        │                          ║
+   ║                        ▼                          ║
+   ║  ┌─────────────────────────────────────────────┐  ║
+   ║  │            Decision Engine                  │  ║
+   ║  └─────────────────────────────────────────────┘  ║
+   ║         │              │               │           ║
+   ║   Auto Send │       Draft │      Escalate          ║
+   ╚════════════════════════════════════════════════════╝
+                │              │               │
+                ▼              ▼               ▼
+          Gmail API       Gmail API        Dashboard
                                    │
                                    ▼
                           +------------------+
@@ -60,7 +64,8 @@ I intentionally separated the system by responsibility instead of technology.
 
 - **Connected Account Manager** is responsible for the integration between RevReply and Gmail. It manages Gmail OAuth, access and refresh tokens, Gmail watch subscription registration and renewal, and multiple connected Gmail accounts per user. Gap recovery (recovering missed emails when a watch expires or the service goes down) is explicitly out of scope for this component — it belongs to the Ingestion Component.
 - **Ingestion** is responsible for reliably receiving Gmail events and protecting them onto the queue. This includes the normal push notification path as well as **gap recovery**: when a watch expires before renewal or the service experiences downtime, the Ingestion Component uses the `last_history_id` stored per `ConnectedAccount` to call Gmail's History API, recover any missed messages, and enqueue them identically to live push notifications. This makes gap recovery a consequence of the same ingestion behavior rather than a separate system. The `last_history_id` is maintained by the Connected Account Manager and consumed by the Ingestion Component.
-- **Context Builder** gathers everything required for reasoning, including the email thread, attachments, and user configs (again limited to gmail for now, but is extensible ).
+- **Workflow Job (Orchestrator)** is a single queue job (`ProcessEmailWorkflowJob`) that owns the complete processing lifecycle for one email — from context building through to the final action. It calls the Context Builder, AI Pipeline, Decision Engine, and Action Executor in sequence. When the job completes cleanly, it is removed from the queue. If any stage throws, the queue retries the job; each stage checks the workflow's current status before doing work so already-completed stages are skipped on retry, making the entire pipeline resumable at zero extra cost.
+- **Context Builder** gathers everything required for reasoning, including the email thread, attachments, and user configs (again limited to Gmail for now, but is extensible). It is the first stage called by the Workflow Job.
 - **AI Pipeline** converts unstructured conversation into structured information (intent, confidence, risk, draft).
 - **Decision Engine** contains deterministic business logic. The LLM recommends; it never decides whether an email is sent automatically.
 - **Action Executor** performs the chosen action through the Gmail API.
@@ -559,26 +564,26 @@ RevReply Ingestion
 
 2. Gmail publishes a push notification through Pub/Sub.
 
-3. The ingestion endpoint validates the notification, creates a queue job and immediately acknowledges Pub/Sub.
+3. The ingestion endpoint validates the notification, creates a `Workflow` record, dispatches `ProcessEmailWorkflowJob` onto the Redis queue, and immediately acknowledges Pub/Sub.
 
-4. A worker picks up the job and retrieves the latest conversation using Gmail's History API.
+4. A queue worker picks up `ProcessEmailWorkflowJob`. This single job is the orchestrator for the entire processing pipeline. All subsequent steps happen sequentially inside this one job. When the job's `handle()` method returns without error, Laravel automatically removes the job from Redis — no separate acknowledgment step is required.
 
-5. The Context Builder fetches
+5. **Context Builder** (first stage of the Workflow Job) fetches
 
 - Thread
 - Attachments
 - User Preferences
 
-and converts them into a structured context object.
+and converts them into a structured `EmailContext` object. If this stage has already been completed on a previous attempt (the workflow status is already `context_built` or later), this stage is skipped and the already-resolved data is used directly.
 
-6. The AI Pipeline performs a single structured inference and returns
+6. **AI Pipeline** (second stage of the Workflow Job) performs a single structured inference and returns
 
 - Intent
 - Confidence
 - Risk
 - Suggested Draft
 
-7. The Decision Engine applies deterministic business rules.
+7. **Decision Engine** (third stage of the Workflow Job) applies deterministic business rules.
 
 Possible outcomes are
 
@@ -587,48 +592,36 @@ Possible outcomes are
 - Escalation
 - Ignore
 
-8. The selected action is executed through the Gmail API.
+8. **Action Executor** (fourth stage of the Workflow Job) executes the chosen action through the Gmail API.
 
-9. Workflow state and audit history are recorded before marking the workflow complete.
+9. The workflow status is set to its final state (`sent`, `draft_created`, etc.) and the audit history is recorded. The job's `handle()` method returns, and Laravel removes the job from the queue automatically.
 
 
 ### Workflow States
 
 Each incoming email progresses through a small number of deterministic workflow states.
 
-Received
-
+```
+Received          ← Workflow record created by Ingestion Component
 ↓
-
-Queued
-
+Queued            ← Job dispatched to Redis queue
 ↓
-
-Processing
-
+Processing        ← Workflow Job picked up by a worker
 ↓
-
-AI Complete
-
+Context Built     ← Context Builder completed; EmailContext assembled
 ↓
-
-Decision Complete
-
+AI Complete       ← AI Pipeline completed; intent, confidence, risk, draft stored
 ↓
-
-Draft Created
-
+Decision Complete ← Decision Engine applied business rules
 ↓
-
-Waiting Approval
-
-↓
-
-Sent
-
+Draft Created     ← Draft saved in Gmail, awaiting human approval
 or
+Sent              ← Auto-reply sent through Gmail API
+or
+Failed            ← Unrecoverable error; see AuditLog for details
+```
 
-Failed
+Each state transition is written to the `workflows` table immediately when the transition occurs. This serves two purposes: observability (any state can be queried at any time) and retry safety (when the Workflow Job retries after a crash, each stage reads the current status before doing work and skips any stage that has already been completed).
 
 Representing the workflow explicitly makes retries, observability and operational debugging significantly simpler than relying only on application logs.
 
