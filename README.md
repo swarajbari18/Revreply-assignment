@@ -975,3 +975,17 @@ The following decisions were made intentionally.
 | **Evaluation Pipeline** | The architecture stores workflow history and AI decisions so evaluations can be added later. The implementation itself focuses only on inference. |
 | **Multi-stage AI Workflow** | I intentionally chose a single structured prompt instead of classifier → critic → evaluator workflows. Additional reasoning stages should only be introduced if production evaluations show they improve quality enough to justify the added latency and complexity. |
 | **Additional Context Sources** | The Context Builder was designed so CRM systems, internal knowledge bases and customer history can be plugged in later. Since the assignment doesn't require them, the current implementation only uses Gmail context and user configuration. |
+
+# Testing Guidelines
+
+When developing test cases for RevReply, follow this strict rule: **never mock internal infrastructure or services.** 
+
+The ecosystem consists of five interactors:
+1. The User
+2. The Gmail Infrastructure
+3. The LLM Provider
+4. The RevReply System (Infrastructure, Services, Controllers, Routes, DB, Redis, Queue, etc.)
+5. The Dashboard
+
+**You must ONLY mock external interactors you do not control (Gmail Infrastructure and the LLM Provider).** 
+You should never use fakes or mocks (`Queue::fake()`, `Mockery::mock()`, `Cache::fake()`, etc.) for any part of the RevReply System or the Dashboard. All tests must run against the actual implementation (using the `sync` queue driver or a real Redis backend for assertions) to ensure maximum production fidelity. End-to-end tests will later validate the entire flow including real external systems.

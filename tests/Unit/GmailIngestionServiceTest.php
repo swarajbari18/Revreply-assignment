@@ -6,13 +6,9 @@ namespace Tests\Unit;
 
 use App\Enums\ConnectedAccountStatus;
 use App\Models\ConnectedAccount;
-use App\Services\Gmail\GmailTokenService;
 use App\Services\GmailIngestionService;
-use Google\Client;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
-use Illuminate\Support\Facades\Queue;
-use Mockery;
 use Tests\TestCase;
 
 class GmailIngestionServiceTest extends TestCase
@@ -22,16 +18,13 @@ class GmailIngestionServiceTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Queue::fake();
     }
 
     public function test_ignores_envelope_missing_message_key(): void
     {
         Log::shouldReceive('warning')->once();
 
-        $client = Mockery::mock(Client::class);
-        $tokenService = Mockery::mock(GmailTokenService::class);
-        $service = new GmailIngestionService($client, $tokenService);
+        $service = $this->app->make(GmailIngestionService::class);
 
         $service->ingest(['foo' => 'bar']);
 
@@ -42,9 +35,7 @@ class GmailIngestionServiceTest extends TestCase
     {
         Log::shouldReceive('warning')->once();
 
-        $client = Mockery::mock(Client::class);
-        $tokenService = Mockery::mock(GmailTokenService::class);
-        $service = new GmailIngestionService($client, $tokenService);
+        $service = $this->app->make(GmailIngestionService::class);
 
         $service->ingest([
             'message' => [
@@ -59,9 +50,7 @@ class GmailIngestionServiceTest extends TestCase
     {
         Log::shouldReceive('warning')->once();
 
-        $client = Mockery::mock(Client::class);
-        $tokenService = Mockery::mock(GmailTokenService::class);
-        $service = new GmailIngestionService($client, $tokenService);
+        $service = $this->app->make(GmailIngestionService::class);
 
         $service->ingest([
             'message' => [
@@ -82,11 +71,7 @@ class GmailIngestionServiceTest extends TestCase
             'last_history_id' => '100',
         ]);
 
-        $client = Mockery::mock(Client::class);
-        $tokenService = Mockery::mock(GmailTokenService::class);
-        $tokenService->shouldNotReceive('getValidAccessToken');
-
-        $service = new GmailIngestionService($client, $tokenService);
+        $service = $this->app->make(GmailIngestionService::class);
 
         $service->ingest([
             'message' => [
@@ -110,11 +95,7 @@ class GmailIngestionServiceTest extends TestCase
             'last_history_id' => null,
         ]);
 
-        $client = Mockery::mock(Client::class);
-        $tokenService = Mockery::mock(GmailTokenService::class);
-        $tokenService->shouldNotReceive('getValidAccessToken');
-
-        $service = new GmailIngestionService($client, $tokenService);
+        $service = $this->app->make(GmailIngestionService::class);
 
         $service->ingest([
             'message' => [
@@ -128,11 +109,5 @@ class GmailIngestionServiceTest extends TestCase
         $this->assertDatabaseHas('workflows', [
             'connected_account_id' => $account->id,
         ]);
-    }
-
-    protected function tearDown(): void
-    {
-        Mockery::close();
-        parent::tearDown();
     }
 }

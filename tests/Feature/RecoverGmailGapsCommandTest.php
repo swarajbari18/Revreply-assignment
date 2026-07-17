@@ -27,7 +27,6 @@ class RecoverGmailGapsCommandTest extends TestCase
     protected function setUp(): void
     {
         parent::setUp();
-        Queue::fake();
     }
 
     public function test_command_processes_gaps_for_expired_watches(): void
@@ -37,15 +36,9 @@ class RecoverGmailGapsCommandTest extends TestCase
             'status' => ConnectedAccountStatus::Connected,
             'watch_expiration' => now()->subDay(),
             'last_history_id' => '100',
+            'access_token' => 'fake-access-token',
+            'token_expires_at' => now()->addHour(),
         ]);
-
-        $mockTokenService = Mockery::mock(GmailTokenService::class);
-        $mockTokenService->shouldReceive('getValidAccessToken')
-            ->once()
-            ->with(Mockery::on(fn ($acc) => $acc->id === $account->id))
-            ->andReturn('fake-access-token');
-
-        $this->app->instance(GmailTokenService::class, $mockTokenService);
 
         $guzzleMock = new GuzzleClient([
             'handler' => HandlerStack::create(
@@ -66,6 +59,10 @@ class RecoverGmailGapsCommandTest extends TestCase
                         ],
                         'historyId' => '101',
                     ])),
+                    new GuzzleResponse(200, [], json_encode([
+                        'historyId' => '102',
+                        'expiration' => now()->addDays(7)->getTimestamp() * 1000,
+                    ])),
                 ])
             ),
         ]);
@@ -85,10 +82,12 @@ class RecoverGmailGapsCommandTest extends TestCase
             'idempotency_key' => 'expired@gmail.com|101',
         ]);
 
-        Queue::assertPushed(ProcessEmailWorkflowJob::class, 1);
-        Queue::assertPushed(RenewGmailWatchJob::class, function ($job) use ($account) {
-            return $job->account->id === $account->id;
-        });
+        $this->assertDatabaseHas('audit_logs', [
+            'event' => 'workflow_picked_up',
+        ]);
+
+        $account->refresh();
+        $this->assertTrue($account->watch_expiration->isFuture());
     }
 
     public function test_command_skips_valid_watches(): void
@@ -102,8 +101,7 @@ class RecoverGmailGapsCommandTest extends TestCase
 
         $this->artisan('gaps:recover')->assertSuccessful();
 
-        Queue::assertNotPushed(ProcessEmailWorkflowJob::class);
-        Queue::assertNotPushed(RenewGmailWatchJob::class);
+        $this->assertDatabaseEmpty('workflows');
     }
 
     public function test_command_handles_stale_history_exception(): void
@@ -113,14 +111,9 @@ class RecoverGmailGapsCommandTest extends TestCase
             'status' => ConnectedAccountStatus::Connected,
             'watch_expiration' => now()->subDay(),
             'last_history_id' => '100',
+            'access_token' => 'fake-access-token',
+            'token_expires_at' => now()->addHour(),
         ]);
-
-        $mockTokenService = Mockery::mock(GmailTokenService::class);
-        $mockTokenService->shouldReceive('getValidAccessToken')
-            ->once()
-            ->andReturn('fake-access-token');
-
-        $this->app->instance(GmailTokenService::class, $mockTokenService);
 
         $guzzleMock = new GuzzleClient([
             'handler' => HandlerStack::create(
@@ -134,6 +127,14 @@ class RecoverGmailGapsCommandTest extends TestCase
                     new GuzzleResponse(200, [], json_encode([
                         'historyId' => '200',
                     ])),
+                    new GuzzleResponse(200, [], json_encode([
+                        'historyId' => '201',
+                        'expiration' => now()->addDays(7)->getTimestamp() * 1000,
+                    ])),
+                    new GuzzleResponse(200, [], json_encode([
+                        'historyId' => '202',
+                        'expiration' => now()->addDays(7)->getTimestamp() * 1000,
+                    ])),
                 ])
             ),
         ]);
@@ -146,9 +147,7 @@ class RecoverGmailGapsCommandTest extends TestCase
         $account->refresh();
         $this->assertSame('200', $account->last_history_id);
 
-        Queue::assertPushed(RenewGmailWatchJob::class, function ($job) use ($account) {
-            return $job->account->id === $account->id;
-        });
+        $this->assertTrue($account->watch_expiration->isFuture());
     }
 
     protected function tearDown(): void
