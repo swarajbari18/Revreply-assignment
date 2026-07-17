@@ -222,6 +222,10 @@ class GmailIngestionService
                 $this->clearAccountCache($account->gmail_email);
             }
         } catch (\Google\Service\Exception $exception) {
+            if ($exception->getCode() === 401) {
+                $this->tokenService->forgetCachedToken($account);
+            }
+
             if ($exception->getCode() === 404) {
                 $gmailService = new Gmail($this->client);
                 $profile = $gmailService->users->getProfile('me');
