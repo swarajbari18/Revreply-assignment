@@ -46,7 +46,7 @@ class AIUnderstandingService
 
         $systemInstruction = "You are a professional sales auto-responder. Analyze the provided email thread history, tone preferences, and attachments. Classify the customer interest into one of these exact categories: 'interested', 'not_interested', 'meeting_request', 'unclear'. Evaluate the confidence of your classification (0.0 to 1.0) and the business risk of sending an automatic reply (0.0 to 1.0). Finally, generate a draft response in the requested tone: '{$context->preferredTone}'. The draft response must NOT contain placeholders, signature blocks, or templates. Write the exact response content.";
 
-        if (! empty($context->pendingDraftBody)) {
+        if (!empty($context->pendingDraftBody)) {
             $systemInstruction .= "\n\nNote: A draft response was previously created for this thread:\n\"{$context->pendingDraftBody}\"\nThe customer has replied since then. Analyze their reply in context of this previous draft and adjust/update the response accordingly.";
         }
 
@@ -63,10 +63,10 @@ class AIUnderstandingService
         }
 
         $attachmentsText = '';
-        if (! empty($context->attachmentTexts)) {
+        if (!empty($context->attachmentTexts)) {
             $attachmentsText = "\nParsed Email Attachments Plain-Text Content:\n";
             foreach ($context->attachmentTexts as $idx => $attText) {
-                $attachmentsText .= 'Attachment '.($idx + 1).":\n{$attText}\n--------------------\n";
+                $attachmentsText .= 'Attachment ' . ($idx + 1) . ":\n{$attText}\n--------------------\n";
             }
         }
 
@@ -95,6 +95,10 @@ class AIUnderstandingService
                 'responseSchema' => [
                     'type' => 'OBJECT',
                     'properties' => [
+                        'reasoning' => [
+                            'type' => 'STRING',
+                            'description' => 'Explanation for the chosen classification, confidence, risk, and drafted response.',
+                        ],
                         'classification' => [
                             'type' => 'STRING',
                             'enum' => ['interested', 'not_interested', 'meeting_request', 'unclear'],
@@ -109,7 +113,7 @@ class AIUnderstandingService
                             'type' => 'STRING',
                         ],
                     ],
-                    'required' => ['classification', 'confidence', 'risk', 'suggested_draft'],
+                    'required' => ['reasoning', 'classification', 'confidence', 'risk', 'suggested_draft'],
                 ],
             ],
         ];
@@ -148,6 +152,7 @@ class AIUnderstandingService
             'correlation_id' => $workflow->correlation_id,
             'event' => 'ai_classification_completed',
             'metadata' => [
+                'reasoning' => $classificationData['reasoning'] ?? null,
                 'classification' => $classification->classification,
                 'confidence' => $classification->confidence,
                 'risk' => $classification->risk,
@@ -172,8 +177,8 @@ class AIUnderstandingService
             }
 
             if ($response->failed()) {
-                Log::error('Gemini API request failed. Status: '.$response->status().' Body: '.$response->body());
-                throw new \Exception('Gemini API request failed with status: '.$response->status());
+                Log::error('Gemini API request failed. Status: ' . $response->status() . ' Body: ' . $response->body());
+                throw new \Exception('Gemini API request failed with status: ' . $response->status());
             }
 
             $body = $response->json();
@@ -185,8 +190,8 @@ class AIUnderstandingService
             $responseText = $candidates[0]['content']['parts'][0]['text'] ?? '';
             $data = json_decode($responseText, true);
 
-            if ($data === null || ! isset($data['classification'], $data['confidence'], $data['risk'], $data['suggested_draft'])) {
-                throw new \Exception('Gemini output failed schema validation: '.$responseText);
+            if ($data === null || !isset($data['reasoning'], $data['classification'], $data['confidence'], $data['risk'], $data['suggested_draft'])) {
+                throw new \Exception('Gemini output failed schema validation: ' . $responseText);
             }
 
             return $data;
@@ -194,15 +199,15 @@ class AIUnderstandingService
         } catch (GeminiRateLimitException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            Log::warning('Gemini request exception: '.$e->getMessage());
+            Log::warning('Gemini request exception: ' . $e->getMessage());
 
-            if (! $isRetry) {
+            if (!$isRetry) {
                 Log::info('Retrying Gemini query with error context...');
                 $errorPayload = $payload;
                 $errorPayload['contents'][] = [
                     'role' => 'user',
                     'parts' => [
-                        ['text' => 'Your previous response was invalid. Error: '.$e->getMessage().'. Please generate a valid JSON string matching the schema exactly.'],
+                        ['text' => 'Your previous response was invalid. Error: ' . $e->getMessage() . '. Please generate a valid JSON string matching the schema exactly.'],
                     ],
                 ];
 

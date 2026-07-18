@@ -25,7 +25,7 @@ export const AuditTimeline: React.FC<AuditTimelineProps> = ({ logs }) => {
             case 'ai_classification_completed':
                 return {
                     label: 'AI Classification',
-                    desc: `Intent: "${metadata?.classification}", Confidence: ${Math.round(metadata?.confidence * 100)}%, Risk: ${Math.round(metadata?.risk * 100)}%`,
+                    desc: `Intent: "${metadata?.classification}", Confidence: ${Math.round(metadata?.confidence * 100)}%, Risk: ${Math.round(metadata?.risk * 100)}% - Reasoning: ${metadata?.reasoning || 'N/A'}`,
                     color: 'bg-purple-500/20 text-purple-400 border-purple-500/30',
                     icon: '🧠'
                 };
