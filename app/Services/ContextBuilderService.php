@@ -273,7 +273,35 @@ class ContextBuilderService
             }
 
             // Fetch full thread
-            $thread = $gmailService->users_threads->get('me', $threadId);
+            try {
+                $thread = $gmailService->users_threads->get('me', $threadId);
+            } catch (\Google\Service\Exception $e) {
+                if ($e->getCode() === 404) {
+                    Log::info('Gmail thread not found (likely deleted or transient), skipping workflow', [
+                        'workflow_id' => $workflow->id,
+                        'thread_id' => $threadId,
+                    ]);
+
+                    $workflow->update([
+                        'status' => WorkflowStatus::Ignored,
+                    ]);
+
+                    AuditLog::create([
+                        'workflow_id' => $workflow->id,
+                        'correlation_id' => $workflow->correlation_id,
+                        'event' => 'workflow_ignored_thread_deleted',
+                        'metadata' => [
+                            'thread_id' => $threadId,
+                            'error' => 'Requested entity was not found.',
+                        ],
+                    ]);
+
+                    return null;
+                }
+                
+                throw $e;
+            }
+
             $gmailMessages = $thread->getMessages();
 
             if (empty($gmailMessages)) {
