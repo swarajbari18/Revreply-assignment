@@ -10,10 +10,7 @@ use App\Jobs\ProcessEmailWorkflowJob;
 use App\Models\AuditLog;
 use App\Models\ConnectedAccount;
 use App\Models\Workflow;
-use Google\Client;
-use GuzzleHttp\Client as GuzzleClient;
-use GuzzleHttp\Handler\MockHandler;
-use GuzzleHttp\HandlerStack;
+use Google\Service\Exception;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Cache;
@@ -433,7 +430,7 @@ class ContextBuilderServiceTest extends TestCase
         $thrown = false;
         try {
             ProcessEmailWorkflowJob::dispatch($workflow->id, $account->id);
-        } catch (\Google\Service\Exception $e) {
+        } catch (Exception $e) {
             $this->assertSame(401, $e->getCode());
             $thrown = true;
         }

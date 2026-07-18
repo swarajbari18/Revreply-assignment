@@ -2,6 +2,8 @@
 
 namespace App\Providers;
 
+use App\Services\Gmail\GmailClientFactory;
+use Google\Client;
 use Illuminate\Support\Facades\URL;
 use Illuminate\Support\ServiceProvider;
 
@@ -12,7 +14,7 @@ class AppServiceProvider extends ServiceProvider
      */
     public function register(): void
     {
-        $this->app->singleton(\Google\Client::class, fn () => \App\Services\Gmail\GmailClientFactory::make());
+        $this->app->singleton(Client::class, fn () => GmailClientFactory::make());
     }
 
     /**

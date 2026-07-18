@@ -50,7 +50,7 @@ class GmailOAuthControllerTest extends TestCase
 
     public function test_index_does_not_leak_tokens_in_response(): void
     {
-        $user    = User::factory()->create();
+        $user = User::factory()->create();
         $account = ConnectedAccount::factory()->create(['user_id' => $user->id]);
 
         $response = $this->getJson("/api/accounts?user_id={$user->id}");
@@ -63,8 +63,8 @@ class GmailOAuthControllerTest extends TestCase
     public function test_destroy_disconnects_account(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'status'        => ConnectedAccountStatus::Connected,
-            'access_token'  => 'live-token',
+            'status' => ConnectedAccountStatus::Connected,
+            'access_token' => 'live-token',
             'refresh_token' => 'live-refresh',
         ]);
 

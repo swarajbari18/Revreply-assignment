@@ -19,22 +19,18 @@ return new class extends Migration
                 ->constrained()
                 ->cascadeOnDelete();
 
-
             $table->string('gmail_email')->unique();
-
 
             $table->text('access_token')->nullable();
             $table->text('refresh_token')->nullable();
 
             $table->timestamp('token_expires_at')->nullable();
 
-
             $table->string('status')->default('connected');
 
             $table->timestamp('watch_expiration')->nullable();
 
             $table->string('last_history_id')->nullable();
-
 
             $table->timestamps();
         });

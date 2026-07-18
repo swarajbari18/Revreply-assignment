@@ -18,7 +18,7 @@ class GmailOAuthController extends Controller
 {
     public function connect(Request $request): RedirectResponse
     {
-        $userId      = (int) $request->query('user_id', '1');
+        $userId = (int) $request->query('user_id', '1');
         $oauthService = new GmailOAuthService(GmailClientFactory::make());
 
         return redirect($oauthService->getAuthUrl($userId));
@@ -30,34 +30,36 @@ class GmailOAuthController extends Controller
 
         if ($request->has('error')) {
             Log::warning('Gmail OAuth denied', ['error' => $request->query('error')]);
-            return redirect($frontendUrl . '?error=oauth_denied');
+
+            return redirect($frontendUrl.'?error=oauth_denied');
         }
 
-        $code  = $request->query('code');
+        $code = $request->query('code');
         $state = $request->query('state');
 
         if (empty($code) || empty($state)) {
-            return redirect($frontendUrl . '?error=missing_params');
+            return redirect($frontendUrl.'?error=missing_params');
         }
 
         try {
-            $client       = GmailClientFactory::make();
+            $client = GmailClientFactory::make();
             $oauthService = new GmailOAuthService($client);
-            $account      = $oauthService->handleCallback($code, $state);
+            $account = $oauthService->handleCallback($code, $state);
 
             $watchService = new GmailWatchService($client, new GmailTokenService($client));
             $watchService->watch($account);
 
-            return redirect($frontendUrl . '?connected=1');
+            return redirect($frontendUrl.'?connected=1');
         } catch (\Throwable $e) {
             Log::error('Gmail OAuth callback failed', ['error' => $e->getMessage()]);
-            return redirect($frontendUrl . '?error=oauth_failed');
+
+            return redirect($frontendUrl.'?error=oauth_failed');
         }
     }
 
     public function index(Request $request): JsonResponse
     {
-        $userId   = (int) $request->query('user_id', '1');
+        $userId = (int) $request->query('user_id', '1');
         $accounts = ConnectedAccount::where('user_id', $userId)->get();
 
         return response()->json($accounts);

@@ -35,7 +35,7 @@ class GmailTokenService
 
     private function resolveAccessToken(ConnectedAccount $account): string
     {
-        $expiresAt    = $account->token_expires_at;
+        $expiresAt = $account->token_expires_at;
         $tokenIsAlive = $expiresAt !== null && $expiresAt->isAfter(now()->addMinutes(5));
 
         if ($tokenIsAlive && $account->access_token !== null) {
@@ -65,17 +65,17 @@ class GmailTokenService
 
                 Log::error('Gmail refresh token permanently revoked', [
                     'account_id' => $account->id,
-                    'error'      => $newTokenData['error'],
+                    'error' => $newTokenData['error'],
                 ]);
 
                 throw new \RuntimeException("Refresh token permanently revoked for account {$account->id}.");
             }
 
-            throw new \RuntimeException("Transient token refresh error for account {$account->id}: " . $newTokenData['error']);
+            throw new \RuntimeException("Transient token refresh error for account {$account->id}: ".$newTokenData['error']);
         }
 
         $account->forceFill([
-            'access_token'     => $newTokenData['access_token'],
+            'access_token' => $newTokenData['access_token'],
             'token_expires_at' => now()->addSeconds($newTokenData['expires_in'] ?? 3600),
         ])->save();
 

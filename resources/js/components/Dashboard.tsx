@@ -6,9 +6,10 @@ interface DashboardProps {
     user: DemoUser;
     onSwitchUser: () => void;
     showToast: (message: string, type: 'success' | 'error') => void;
+    onSelectAccount: (account: ConnectedAccount) => void;
 }
 
-export const Dashboard: React.FC<DashboardProps> = ({ user, onSwitchUser, showToast }) => {
+export const Dashboard: React.FC<DashboardProps> = ({ user, onSwitchUser, showToast, onSelectAccount }) => {
     const [accounts, setAccounts] = useState<ConnectedAccount[]>([]);
     const [isLoading, setIsLoading] = useState(true);
 
@@ -103,6 +104,7 @@ export const Dashboard: React.FC<DashboardProps> = ({ user, onSwitchUser, showTo
                             account={account}
                             onDisconnect={handleDisconnect}
                             onReconnect={handleReconnect}
+                            onSelect={onSelectAccount}
                         />
                     ))}
                 </div>

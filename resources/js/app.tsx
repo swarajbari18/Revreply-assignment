@@ -2,11 +2,13 @@ import React, { useState, useEffect } from 'react';
 import { createRoot } from 'react-dom/client';
 import { UserPicker } from './components/UserPicker';
 import { Dashboard } from './components/Dashboard';
+import { WorkflowWorkspace } from './components/WorkflowWorkspace';
 import { Toast } from './components/Toast';
-import { DemoUser } from './types';
+import { DemoUser, ConnectedAccount } from './types';
 
 const App = () => {
     const [selectedUser, setSelectedUser] = useState<DemoUser | null>(null);
+    const [selectedAccount, setSelectedAccount] = useState<ConnectedAccount | null>(null);
     const [toast, setToast] = useState<{ message: string; type: 'success' | 'error' } | null>(null);
 
     // Read selected user from localStorage on mount
@@ -43,6 +45,7 @@ const App = () => {
 
     const handleSwitchUser = () => {
         localStorage.removeItem('revreply_demo_user');
+        setSelectedAccount(null);
         setSelectedUser(null);
     };
 
@@ -53,11 +56,20 @@ const App = () => {
     return (
         <div className="min-h-screen bg-[#0a0a0c] text-gray-200">
             {selectedUser ? (
-                <Dashboard
-                    user={selectedUser}
-                    onSwitchUser={handleSwitchUser}
-                    showToast={showToast}
-                />
+                selectedAccount ? (
+                    <WorkflowWorkspace
+                        account={selectedAccount}
+                        onBack={() => setSelectedAccount(null)}
+                        showToast={showToast}
+                    />
+                ) : (
+                    <Dashboard
+                        user={selectedUser}
+                        onSwitchUser={handleSwitchUser}
+                        showToast={showToast}
+                        onSelectAccount={setSelectedAccount}
+                    />
+                )
             ) : (
                 <UserPicker onSelectUser={handleSelectUser} />
             )}

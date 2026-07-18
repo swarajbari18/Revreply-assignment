@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Enums\ConnectedAccountStatus;
 use App\Models\ConnectedAccount;
 use App\Models\User;
+use Illuminate\Database\QueryException;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\DB;
 use Tests\TestCase;
@@ -105,7 +106,7 @@ class ConnectedAccountTest extends TestCase
             'gmail_email' => 'same@example.com',
         ]);
 
-        $this->expectException(\Illuminate\Database\QueryException::class);
+        $this->expectException(QueryException::class);
 
         ConnectedAccount::factory()->create([
             'gmail_email' => 'same@example.com',

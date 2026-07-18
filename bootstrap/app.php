@@ -3,13 +3,14 @@
 use Illuminate\Foundation\Application;
 use Illuminate\Foundation\Configuration\Exceptions;
 use Illuminate\Foundation\Configuration\Middleware;
+use Illuminate\Foundation\Http\Middleware\VerifyCsrfToken;
 use Illuminate\Http\Request;
 use Illuminate\Support\Facades\Route;
 
 return Application::configure(basePath: dirname(__DIR__))
     ->withRouting(
-        web: __DIR__ . '/../routes/web.php',
-        commands: __DIR__ . '/../routes/console.php',
+        web: __DIR__.'/../routes/web.php',
+        commands: __DIR__.'/../routes/console.php',
         health: '/up',
         then: function () {
             Route::middleware('api')
@@ -18,12 +19,16 @@ return Application::configure(basePath: dirname(__DIR__))
 
             Route::middleware(['web'])
                 ->prefix('auth/gmail')
-                ->withoutMiddleware(\Illuminate\Foundation\Http\Middleware\VerifyCsrfToken::class)
+                ->withoutMiddleware(VerifyCsrfToken::class)
                 ->group(base_path('routes/oauth.php'));
 
             Route::middleware('api')
                 ->prefix('api')
                 ->group(base_path('routes/accounts.php'));
+
+            Route::middleware('api')
+                ->prefix('api')
+                ->group(base_path('routes/workflows.php'));
         },
     )
     ->withMiddleware(function (Middleware $middleware): void {
@@ -31,6 +36,6 @@ return Application::configure(basePath: dirname(__DIR__))
     })
     ->withExceptions(function (Exceptions $exceptions): void {
         $exceptions->shouldRenderJsonWhen(
-            fn(Request $request) => $request->is('api/*'),
+            fn (Request $request) => $request->is('api/*'),
         );
     })->create();

@@ -13,7 +13,7 @@ class ProcessedNotificationFactory extends Factory
     public function definition(): array
     {
         return [
-            'idempotency_key' => fake()->email() . '|' . fake()->numerify('########'),
+            'idempotency_key' => fake()->email().'|'.fake()->numerify('########'),
             'connected_account_id' => ConnectedAccount::factory(),
             'processed_at' => now(),
         ];

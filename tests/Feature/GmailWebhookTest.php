@@ -6,20 +6,11 @@ namespace Tests\Feature;
 
 use App\Enums\ConnectedAccountStatus;
 use App\Enums\WorkflowStatus;
-use App\Jobs\ProcessEmailWorkflowJob;
-use App\Models\AuditLog;
 use App\Models\ConnectedAccount;
 use App\Models\ProcessedNotification;
 use App\Models\Workflow;
-use App\Services\Gmail\GmailTokenService;
-use Google\Client;
-use GuzzleHttp\Client as GuzzleClient;
-use GuzzleHttp\Handler\MockHandler;
-use GuzzleHttp\HandlerStack;
 use GuzzleHttp\Psr7\Response as GuzzleResponse;
 use Illuminate\Foundation\Testing\RefreshDatabase;
-use Illuminate\Support\Facades\Cache;
-use Illuminate\Support\Facades\Queue;
 use Mockery;
 use Tests\TestCase;
 

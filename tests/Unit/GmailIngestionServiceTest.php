@@ -5,8 +5,10 @@ declare(strict_types=1);
 namespace Tests\Unit;
 
 use App\Enums\ConnectedAccountStatus;
+use App\Enums\WorkflowStatus;
 use App\Models\ConnectedAccount;
 use App\Services\GmailIngestionService;
+use GuzzleHttp\Psr7\Response;
 use Illuminate\Foundation\Testing\RefreshDatabase;
 use Illuminate\Support\Facades\Log;
 use Tests\TestCase;
@@ -109,8 +111,8 @@ class GmailIngestionServiceTest extends TestCase
         ]);
 
         $this->mockGmailClient([
-            new \GuzzleHttp\Psr7\Response(200, [], $historyResponse),
-            new \GuzzleHttp\Psr7\Response(200, [], $threadResponse),
+            new Response(200, [], $historyResponse),
+            new Response(200, [], $threadResponse),
         ]);
 
         $service = $this->app->make(GmailIngestionService::class);
@@ -126,7 +128,7 @@ class GmailIngestionServiceTest extends TestCase
 
         $this->assertDatabaseHas('workflows', [
             'connected_account_id' => $account->id,
-            'status' => \App\Enums\WorkflowStatus::ContextBuilt,
+            'status' => WorkflowStatus::ContextBuilt,
         ]);
     }
 
@@ -139,10 +141,10 @@ class GmailIngestionServiceTest extends TestCase
         ]);
 
         $this->mockGmailClient([
-            new \GuzzleHttp\Psr7\Response(200, [], json_encode([
+            new Response(200, [], json_encode([
                 'historyId' => '200',
             ])),
-            new \GuzzleHttp\Psr7\Response(200, [], json_encode([
+            new Response(200, [], json_encode([
                 'historyId' => '201',
                 'expiration' => (string) (now()->addDays(7)->getTimestamp() * 1000),
             ])),
@@ -161,7 +163,7 @@ class GmailIngestionServiceTest extends TestCase
 
         $this->assertDatabaseHas('workflows', [
             'connected_account_id' => $account->id,
-            'status' => \App\Enums\WorkflowStatus::Failed,
+            'status' => WorkflowStatus::Failed,
         ]);
     }
 }

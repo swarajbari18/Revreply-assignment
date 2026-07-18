@@ -5,9 +5,10 @@ interface AccountCardProps {
     account: ConnectedAccount;
     onDisconnect: (id: number) => Promise<void>;
     onReconnect: (email: string) => void;
+    onSelect: (account: ConnectedAccount) => void;
 }
 
-export const AccountCard: React.FC<AccountCardProps> = ({ account, onDisconnect, onReconnect }) => {
+export const AccountCard: React.FC<AccountCardProps> = ({ account, onDisconnect, onReconnect, onSelect }) => {
     const [confirmDisconnect, setConfirmDisconnect] = useState(false);
     const [isDeleting, setIsDeleting] = useState(false);
 
@@ -86,31 +87,39 @@ export const AccountCard: React.FC<AccountCardProps> = ({ account, onDisconnect,
 
             <div className="flex items-center gap-2 self-end md:self-center shrink-0">
                 {isConnected ? (
-                    confirmDisconnect ? (
-                        <div className="flex items-center gap-1">
-                            <button
-                                onClick={handleDelete}
-                                disabled={isDeleting}
-                                className="px-3 py-1.5 bg-rose-500/15 hover:bg-rose-500 text-rose-400 hover:text-white rounded-lg text-xs font-semibold border border-rose-500/30 transition-all duration-200"
-                            >
-                                {isDeleting ? 'Disconnecting...' : 'Yes, Disconnect'}
-                            </button>
-                            <button
-                                onClick={() => setConfirmDisconnect(false)}
-                                disabled={isDeleting}
-                                className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-gray-300 rounded-lg text-xs font-semibold border border-white/5 transition-all duration-200"
-                            >
-                                Cancel
-                            </button>
-                        </div>
-                    ) : (
+                    <div className="flex items-center gap-2">
                         <button
-                            onClick={() => setConfirmDisconnect(true)}
-                            className="px-3 py-1.5 bg-white/5 hover:bg-rose-500/10 text-gray-400 hover:text-rose-400 rounded-lg text-xs font-semibold border border-white/5 hover:border-rose-500/20 transition-all duration-200"
+                            onClick={() => onSelect(account)}
+                            className="px-3 py-1.5 bg-indigo-500 hover:bg-indigo-600 text-white rounded-lg text-xs font-semibold shadow-lg shadow-indigo-500/10 hover:shadow-indigo-500/20 transition-all duration-200"
                         >
-                            Disconnect
+                            Manage Workflows
                         </button>
-                    )
+                        {confirmDisconnect ? (
+                            <div className="flex items-center gap-1">
+                                <button
+                                    onClick={handleDelete}
+                                    disabled={isDeleting}
+                                    className="px-3 py-1.5 bg-rose-500/15 hover:bg-rose-500 text-rose-400 hover:text-white rounded-lg text-xs font-semibold border border-rose-500/30 transition-all duration-200"
+                                    >
+                                    {isDeleting ? 'Disconnecting...' : 'Yes, Disconnect'}
+                                </button>
+                                <button
+                                    onClick={() => setConfirmDisconnect(false)}
+                                    disabled={isDeleting}
+                                    className="px-3 py-1.5 bg-white/5 hover:bg-white/10 text-gray-300 rounded-lg text-xs font-semibold border border-white/5 transition-all duration-200"
+                                >
+                                    Cancel
+                                </button>
+                            </div>
+                        ) : (
+                            <button
+                                onClick={() => setConfirmDisconnect(true)}
+                                className="px-3 py-1.5 bg-white/5 hover:bg-rose-500/10 text-gray-400 hover:text-rose-400 rounded-lg text-xs font-semibold border border-white/5 hover:border-rose-500/20 transition-all duration-200"
+                            >
+                                Disconnect
+                            </button>
+                        )}
+                    </div>
                 ) : (
                     <button
                         onClick={() => onReconnect(account.gmail_email)}

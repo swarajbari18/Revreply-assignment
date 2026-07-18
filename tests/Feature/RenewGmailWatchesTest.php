@@ -7,6 +7,7 @@ namespace Tests\Feature;
 use App\Enums\ConnectedAccountStatus;
 use App\Jobs\RenewGmailWatchJob;
 use App\Models\ConnectedAccount;
+use App\Services\Gmail\GmailWatchService;
 use Google\Client;
 use GuzzleHttp\Client as GuzzleClient;
 use GuzzleHttp\Handler\MockHandler;
@@ -97,7 +98,7 @@ class RenewGmailWatchesTest extends TestCase
         $client->setHttpClient($guzzleMock);
 
         $job = new RenewGmailWatchJob($account);
-        $job->handle($this->app->make(\App\Services\Gmail\GmailWatchService::class));
+        $job->handle($this->app->make(GmailWatchService::class));
 
         $account->refresh();
         $this->assertTrue($account->watch_expiration->isFuture());
@@ -129,9 +130,9 @@ class RenewGmailWatchesTest extends TestCase
 
         $job = new RenewGmailWatchJob($account);
         $job->withFakeQueueInteractions();
-        
+
         try {
-            $job->handle($this->app->make(\App\Services\Gmail\GmailWatchService::class));
+            $job->handle($this->app->make(GmailWatchService::class));
         } catch (\Exception $e) {
             // Expected
         }
@@ -164,8 +165,8 @@ class RenewGmailWatchesTest extends TestCase
         $job = new RenewGmailWatchJob($account);
 
         $this->expectException(\Google\Service\Exception::class);
-        $this->expectExceptionMessage("Too Many Requests");
+        $this->expectExceptionMessage('Too Many Requests');
 
-        $job->handle($this->app->make(\App\Services\Gmail\GmailWatchService::class));
+        $job->handle($this->app->make(GmailWatchService::class));
     }
 }

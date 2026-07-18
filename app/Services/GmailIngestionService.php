@@ -6,13 +6,16 @@ namespace App\Services;
 
 use App\Enums\WorkflowStatus;
 use App\Jobs\ProcessEmailWorkflowJob;
+use App\Jobs\RenewGmailWatchJob;
 use App\Models\AuditLog;
 use App\Models\ConnectedAccount;
 use App\Models\ProcessedNotification;
 use App\Models\Workflow;
 use App\Services\Gmail\GmailTokenService;
 use Google\Client;
+use Google\Service\Exception;
 use Google\Service\Gmail;
+use Google\Service\Gmail\Message;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\DB;
 use Illuminate\Support\Facades\Log;
@@ -30,6 +33,7 @@ class GmailIngestionService
         $parsed = $this->parseEnvelope($payload);
         if ($parsed === null) {
             Log::warning('Malformed Pub/Sub payload received', $payload);
+
             return;
         }
 
@@ -41,6 +45,7 @@ class GmailIngestionService
                 'gmail_email' => $gmailEmail,
                 'history_id' => $historyId,
             ]);
+
             return;
         }
 
@@ -49,13 +54,15 @@ class GmailIngestionService
             Log::warning('Unknown Gmail account notification received', [
                 'gmail_email' => $gmailEmail,
             ]);
+
             return;
         }
 
-        if (!$account->isConnected()) {
+        if (! $account->isConnected()) {
             Log::info('Notification received for disconnected account', [
                 'gmail_email' => $gmailEmail,
             ]);
+
             return;
         }
 
@@ -68,7 +75,7 @@ class GmailIngestionService
             ]);
             $this->recoverGap($account, $lastHistoryId);
 
-            if (!$this->isAlreadyProcessed($gmailEmail, $historyId)) {
+            if (! $this->isAlreadyProcessed($gmailEmail, $historyId)) {
                 ProcessedNotification::create([
                     'idempotency_key' => $this->buildIdempotencyKey($gmailEmail, $historyId),
                     'connected_account_id' => $account->id,
@@ -132,7 +139,7 @@ class GmailIngestionService
 
     private function parseEnvelope(array $payload): ?array
     {
-        if (!isset($payload['message']['data'])) {
+        if (! isset($payload['message']['data'])) {
             return null;
         }
 
@@ -142,7 +149,7 @@ class GmailIngestionService
         }
 
         $decoded = json_decode($data, true);
-        if (!is_array($decoded) || !isset($decoded['emailAddress']) || !isset($decoded['historyId'])) {
+        if (! is_array($decoded) || ! isset($decoded['emailAddress']) || ! isset($decoded['historyId'])) {
             return null;
         }
 
@@ -155,20 +162,22 @@ class GmailIngestionService
     private function isAlreadyProcessed(string $gmailEmail, string $historyId): bool
     {
         $key = $this->buildIdempotencyKey($gmailEmail, $historyId);
+
         return ProcessedNotification::where('idempotency_key', $key)->exists();
     }
 
     private function buildIdempotencyKey(string $gmailEmail, string $historyId): string
     {
-        return $gmailEmail . '|' . $historyId;
+        return $gmailEmail.'|'.$historyId;
     }
 
     public function resolveConnectedAccount(string $gmailEmail): ?ConnectedAccount
     {
-        $cacheKey = 'ingestion_account:' . $gmailEmail;
+        $cacheKey = 'ingestion_account:'.$gmailEmail;
 
         $cachedAttributes = Cache::remember($cacheKey, 300, function () use ($gmailEmail) {
             $account = ConnectedAccount::where('gmail_email', $gmailEmail)->first();
+
             return $account ? $account->getRawOriginal() : null;
         });
 
@@ -181,7 +190,7 @@ class GmailIngestionService
 
     public function clearAccountCache(string $gmailEmail): void
     {
-        Cache::forget('ingestion_account:' . $gmailEmail);
+        Cache::forget('ingestion_account:'.$gmailEmail);
     }
 
     public function recoverGap(ConnectedAccount $account, string $startHistoryId): void
@@ -198,7 +207,7 @@ class GmailIngestionService
             $histories = $response->getHistory();
             $maxHistoryId = $startHistoryId;
 
-            if (!empty($histories)) {
+            if (! empty($histories)) {
                 foreach ($histories as $history) {
                     $historyId = (string) $history->getId();
                     if ((int) $historyId > (int) $maxHistoryId) {
@@ -210,7 +219,7 @@ class GmailIngestionService
                     }
 
                     $messagesAdded = $history->getMessagesAdded();
-                    if (!empty($messagesAdded)) {
+                    if (! empty($messagesAdded)) {
                         foreach ($messagesAdded as $messageAdded) {
                             $message = $messageAdded->getMessage();
                             $this->ingestRecoveredMessage($account, $message, $historyId);
@@ -225,7 +234,7 @@ class GmailIngestionService
                 ])->save();
                 $this->clearAccountCache($account->gmail_email);
             }
-        } catch (\Google\Service\Exception $exception) {
+        } catch (Exception $exception) {
             if ($exception->getCode() === 401) {
                 $this->tokenService->forgetCachedToken($account);
             }
@@ -246,14 +255,15 @@ class GmailIngestionService
                     'new_history_id' => $currentHistoryId,
                 ]);
 
-                \App\Jobs\RenewGmailWatchJob::dispatch($account);
+                RenewGmailWatchJob::dispatch($account);
+
                 return;
             }
             throw $exception;
         }
     }
 
-    private function ingestRecoveredMessage(ConnectedAccount $account, \Google\Service\Gmail\Message $message, string $historyId): void
+    private function ingestRecoveredMessage(ConnectedAccount $account, Message $message, string $historyId): void
     {
         $correlationId = (string) Str::uuid();
 

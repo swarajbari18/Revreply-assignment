@@ -5,8 +5,6 @@ declare(strict_types=1);
 namespace App\Jobs;
 
 use App\Models\ConnectedAccount;
-use App\Services\Gmail\GmailClientFactory;
-use App\Services\Gmail\GmailTokenService;
 use App\Services\Gmail\GmailWatchService;
 use Illuminate\Bus\Queueable;
 use Illuminate\Contracts\Queue\ShouldQueue;
@@ -26,7 +24,7 @@ class RenewGmailWatchJob implements ShouldQueue
 
     public function handle(GmailWatchService $watchService): void
     {
-        if (!$this->account->isConnected()) {
+        if (! $this->account->isConnected()) {
             return;
         }
 
@@ -36,6 +34,7 @@ class RenewGmailWatchJob implements ShouldQueue
             $message = $exception->getMessage();
             if (str_contains($message, 'permanently revoked') || str_contains($message, 'no refresh token')) {
                 $this->fail($exception);
+
                 return;
             }
             throw $exception;

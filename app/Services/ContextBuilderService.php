@@ -6,11 +6,14 @@ namespace App\Services;
 
 use App\DataTransferObjects\EmailContext;
 use App\Enums\WorkflowStatus;
+use App\Jobs\RenewGmailWatchJob;
 use App\Models\AuditLog;
 use App\Models\ConnectedAccount;
 use App\Models\Workflow;
 use App\Services\Gmail\GmailTokenService;
 use Google\Client;
+use Google\Service\Gmail;
+use Google\Service\Gmail\MessagePart;
 use Illuminate\Support\Facades\Cache;
 use Illuminate\Support\Facades\Log;
 
@@ -23,18 +26,15 @@ class ContextBuilderService
 
     /**
      * Builds the email context for a given workflow.
-     *
-     * @param int $workflowId
-     * @param int $connectedAccountId
-     * @return EmailContext|null
      */
     public function build(int $workflowId, int $connectedAccountId): ?EmailContext
     {
         $lockKey = "workflow_lock:{$workflowId}";
         $lock = Cache::lock($lockKey, 300);
 
-        if (!$lock->get()) {
+        if (! $lock->get()) {
             Log::debug('Workflow lock could not be acquired', ['workflow_id' => $workflowId]);
+
             return null;
         }
 
@@ -46,6 +46,7 @@ class ContextBuilderService
                     'workflow_id' => $workflowId,
                     'status' => $workflow->status->value,
                 ]);
+
                 return null;
             }
 
@@ -60,7 +61,7 @@ class ContextBuilderService
                 WorkflowStatus::Sent,
             ], true);
 
-            if (!$alreadyContextBuilt) {
+            if (! $alreadyContextBuilt) {
                 // Transition status to Processing
                 $workflow->update([
                     'status' => WorkflowStatus::Processing,
@@ -106,7 +107,7 @@ class ContextBuilderService
             }
 
             $this->client->setAccessToken(['access_token' => $accessToken]);
-            $gmailService = new \Google\Service\Gmail($this->client);
+            $gmailService = new Gmail($this->client);
 
             // Resolve thread_id and latest_message_id if null
             $threadId = $workflow->thread_id;
@@ -150,7 +151,7 @@ class ContextBuilderService
                         ])->save();
                         $this->clearAccountCache($account->gmail_email);
 
-                        \App\Jobs\RenewGmailWatchJob::dispatch($account);
+                        RenewGmailWatchJob::dispatch($account);
 
                         $workflow->update([
                             'status' => WorkflowStatus::Failed,
@@ -173,10 +174,10 @@ class ContextBuilderService
                     ]);
                     $histories = $response->getHistory();
 
-                    if (!empty($histories)) {
+                    if (! empty($histories)) {
                         foreach ($histories as $history) {
                             $messagesAdded = $history->getMessagesAdded();
-                            if (!empty($messagesAdded)) {
+                            if (! empty($messagesAdded)) {
                                 foreach ($messagesAdded as $messageAdded) {
                                     $message = $messageAdded->getMessage();
                                     if ($message) {
@@ -212,7 +213,7 @@ class ContextBuilderService
                         ])->save();
                         $this->clearAccountCache($account->gmail_email);
 
-                        \App\Jobs\RenewGmailWatchJob::dispatch($account);
+                        RenewGmailWatchJob::dispatch($account);
 
                         $workflow->update([
                             'status' => WorkflowStatus::Failed,
@@ -246,7 +247,7 @@ class ContextBuilderService
                     ])->save();
                     $this->clearAccountCache($account->gmail_email);
 
-                    \App\Jobs\RenewGmailWatchJob::dispatch($account);
+                    RenewGmailWatchJob::dispatch($account);
 
                     $workflow->update([
                         'status' => WorkflowStatus::Failed,
@@ -284,7 +285,7 @@ class ContextBuilderService
             $attachments = [];
             foreach ($gmailMessages as $message) {
                 $msgPayload = $message->getPayload();
-                if (!$msgPayload) {
+                if (! $msgPayload) {
                     continue;
                 }
 
@@ -370,6 +371,53 @@ class ContextBuilderService
                 }
             }
 
+            // Fetch previous active drafts on the thread to avoid duplicate drafts and incorporate context
+            $pendingDraftBody = null;
+            $previousWorkflow = Workflow::where('thread_id', $threadId)
+                ->where('id', '<', $workflow->id)
+                ->where('status', WorkflowStatus::DraftCreated)
+                ->whereNotNull('draft_id')
+                ->first();
+
+            if ($previousWorkflow) {
+                try {
+                    $draft = $gmailService->users_drafts->get('me', $previousWorkflow->draft_id);
+                    $draftMsg = $draft->getMessage();
+                    if ($draftMsg) {
+                        $parsedDraftBody = $this->parseMessageBody($draftMsg->getPayload());
+                        $draftText = $parsedDraftBody['text'];
+                        if ($draftText === null && $parsedDraftBody['html'] !== null) {
+                            $draftText = strip_tags($parsedDraftBody['html']);
+                        }
+                        $pendingDraftBody = $draftText ?? '';
+                    }
+
+                    // Delete the draft from Gmail
+                    $gmailService->users_drafts->delete('me', $previousWorkflow->draft_id);
+
+                    // Update previous workflow to Ignored
+                    $previousWorkflow->update([
+                        'status' => WorkflowStatus::Ignored,
+                    ]);
+
+                    AuditLog::create([
+                        'workflow_id' => $previousWorkflow->id,
+                        'correlation_id' => $previousWorkflow->correlation_id,
+                        'event' => 'workflow_ignored',
+                        'metadata' => [
+                            'reason' => 'superceded_by_new_reply',
+                            'new_workflow_id' => $workflow->id,
+                        ],
+                    ]);
+                } catch (\Exception $e) {
+                    Log::warning('Failed to handle previous pending draft during context building', [
+                        'workflow_id' => $workflow->id,
+                        'previous_workflow_id' => $previousWorkflow->id,
+                        'error' => $e->getMessage(),
+                    ]);
+                }
+            }
+
             // Load user preferences
             $preferences = $this->loadUserPreferences($account->user_id);
 
@@ -385,10 +433,11 @@ class ContextBuilderService
                 autoSendConfidenceThreshold: $preferences['autoSendConfidenceThreshold'],
                 autoSendRiskThreshold: $preferences['autoSendRiskThreshold'],
                 ignoredSenderPatterns: $preferences['ignoredSenderPatterns'],
-                correlationId: $workflow->correlation_id
+                correlationId: $workflow->correlation_id,
+                pendingDraftBody: $pendingDraftBody
             );
 
-            if (!$alreadyContextBuilt) {
+            if (! $alreadyContextBuilt) {
                 AuditLog::create([
                     'workflow_id' => $workflow->id,
                     'correlation_id' => $workflow->correlation_id,
@@ -411,7 +460,7 @@ class ContextBuilderService
         }
     }
 
-    private function parseMessageBody(\Google\Service\Gmail\MessagePart $part): array
+    private function parseMessageBody(MessagePart $part): array
     {
         $mimeType = $part->getMimeType();
         $bodyData = $part->getBody() ? $part->getBody()->getData() : null;
@@ -433,14 +482,14 @@ class ContextBuilderService
         $text = null;
         $html = null;
         $parts = $part->getParts();
-        if (!empty($parts)) {
+        if (! empty($parts)) {
             foreach ($parts as $subPart) {
                 $parsed = $this->parseMessageBody($subPart);
                 if ($parsed['text'] !== null) {
-                    $text = ($text ?? '') . $parsed['text'];
+                    $text = ($text ?? '').$parsed['text'];
                 }
                 if ($parsed['html'] !== null) {
-                    $html = ($html ?? '') . $parsed['html'];
+                    $html = ($html ?? '').$parsed['html'];
                 }
             }
         }
@@ -456,13 +505,13 @@ class ContextBuilderService
         return base64_decode(strtr($data, '-_', '+/'));
     }
 
-    private function extractAttachmentIds(\Google\Service\Gmail\MessagePart $part, string $messageId, array &$attachments): void
+    private function extractAttachmentIds(MessagePart $part, string $messageId, array &$attachments): void
     {
         $filename = $part->getFilename();
         $body = $part->getBody();
         $attachmentId = $body ? $body->getAttachmentId() : null;
 
-        if (!empty($filename) && !empty($attachmentId)) {
+        if (! empty($filename) && ! empty($attachmentId)) {
             $attachments[] = [
                 'id' => $attachmentId,
                 'messageId' => $messageId,
@@ -472,7 +521,7 @@ class ContextBuilderService
         }
 
         $parts = $part->getParts();
-        if (!empty($parts)) {
+        if (! empty($parts)) {
             foreach ($parts as $subPart) {
                 $this->extractAttachmentIds($subPart, $messageId, $attachments);
             }
@@ -529,6 +578,6 @@ class ContextBuilderService
 
     private function clearAccountCache(string $gmailEmail): void
     {
-        Cache::forget('ingestion_account:' . $gmailEmail);
+        Cache::forget('ingestion_account:'.$gmailEmail);
     }
 }

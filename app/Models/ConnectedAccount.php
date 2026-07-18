@@ -5,12 +5,12 @@ declare(strict_types=1);
 namespace App\Models;
 
 use App\Enums\ConnectedAccountStatus;
-use Database\Factories\ConnectedAccountFactory;
 use Illuminate\Database\Eloquent\Attributes\Fillable;
 use Illuminate\Database\Eloquent\Attributes\Hidden;
 use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
+use Illuminate\Support\Facades\Cache;
 
 #[Fillable([
     'user_id',
@@ -30,15 +30,14 @@ class ConnectedAccount extends Model
 {
     use HasFactory;
 
-
     protected static function booted(): void
     {
         static::saved(function (ConnectedAccount $account) {
-            \Illuminate\Support\Facades\Cache::forget('ingestion_account:' . $account->gmail_email);
+            Cache::forget('ingestion_account:'.$account->gmail_email);
         });
 
         static::deleted(function (ConnectedAccount $account) {
-            \Illuminate\Support\Facades\Cache::forget('ingestion_account:' . $account->gmail_email);
+            Cache::forget('ingestion_account:'.$account->gmail_email);
         });
     }
 

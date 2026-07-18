@@ -7,9 +7,9 @@ namespace App\DataTransferObjects;
 final class EmailContext
 {
     /**
-     * @param array<int, array{role: string, body: string, timestamp: string, from: string, to: string, subject: string}> $messages
-     * @param list<string> $attachmentTexts
-     * @param list<string> $ignoredSenderPatterns
+     * @param  array<int, array{role: string, body: string, timestamp: string, from: string, to: string, subject: string}>  $messages
+     * @param  list<string>  $attachmentTexts
+     * @param  list<string>  $ignoredSenderPatterns
      */
     public function __construct(
         public readonly string $threadId,
@@ -22,7 +22,8 @@ final class EmailContext
         public readonly float $autoSendConfidenceThreshold,
         public readonly float $autoSendRiskThreshold,
         public readonly array $ignoredSenderPatterns,
-        public readonly string $correlationId
+        public readonly string $correlationId,
+        public readonly ?string $pendingDraftBody = null
     ) {}
 
     public function toArray(): array
@@ -39,6 +40,7 @@ final class EmailContext
             'autoSendRiskThreshold' => $this->autoSendRiskThreshold,
             'ignoredSenderPatterns' => $this->ignoredSenderPatterns,
             'correlationId' => $this->correlationId,
+            'pendingDraftBody' => $this->pendingDraftBody,
         ];
     }
 }

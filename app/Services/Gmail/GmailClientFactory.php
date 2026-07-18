@@ -10,7 +10,7 @@ class GmailClientFactory
 {
     public static function make(): Client
     {
-        $client = new Client();
+        $client = new Client;
 
         $client->setClientId(config('services.google.client_id'));
         $client->setClientSecret(config('services.google.client_secret'));

@@ -10,12 +10,15 @@ use Illuminate\Database\Eloquent\Factories\HasFactory;
 use Illuminate\Database\Eloquent\Model;
 use Illuminate\Database\Eloquent\Relations\BelongsTo;
 use Illuminate\Database\Eloquent\Relations\HasMany;
+use Illuminate\Database\Eloquent\Relations\HasOne;
 
 #[Fillable([
     'connected_account_id',
     'thread_id',
     'latest_message_id',
+    'draft_id',
     'status',
+    'failure_reason',
     'correlation_id',
     'started_at',
     'completed_at',
@@ -41,5 +44,10 @@ class Workflow extends Model
     public function auditLogs(): HasMany
     {
         return $this->hasMany(AuditLog::class);
+    }
+
+    public function classification(): HasOne
+    {
+        return $this->hasOne(Classification::class);
     }
 }

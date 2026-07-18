@@ -6,7 +6,6 @@ namespace Tests\Unit;
 
 use App\Enums\ConnectedAccountStatus;
 use App\Models\ConnectedAccount;
-use App\Models\User;
 use App\Services\Gmail\GmailTokenService;
 use Google\Client;
 use Illuminate\Foundation\Testing\RefreshDatabase;
@@ -30,7 +29,7 @@ class GmailTokenServiceTest extends TestCase
         $mockClient->shouldNotReceive('fetchAccessTokenWithRefreshToken');
 
         $service = new GmailTokenService($mockClient);
-        $token   = $service->getValidAccessToken($account);
+        $token = $service->getValidAccessToken($account);
 
         $this->assertSame('cached-token', $token);
     }
@@ -38,7 +37,7 @@ class GmailTokenServiceTest extends TestCase
     public function test_returns_db_token_when_still_valid_and_cache_empty(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'access_token'     => 'db-access-token',
+            'access_token' => 'db-access-token',
             'token_expires_at' => now()->addMinutes(30),
         ]);
 
@@ -46,7 +45,7 @@ class GmailTokenServiceTest extends TestCase
         $mockClient->shouldNotReceive('fetchAccessTokenWithRefreshToken');
 
         $service = new GmailTokenService($mockClient);
-        $token   = $service->getValidAccessToken($account);
+        $token = $service->getValidAccessToken($account);
 
         $this->assertSame('db-access-token', $token);
     }
@@ -54,8 +53,8 @@ class GmailTokenServiceTest extends TestCase
     public function test_refreshes_token_when_expired(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'access_token'     => 'old-token',
-            'refresh_token'    => 'valid-refresh-token',
+            'access_token' => 'old-token',
+            'refresh_token' => 'valid-refresh-token',
             'token_expires_at' => now()->subMinutes(10),
         ]);
 
@@ -65,11 +64,11 @@ class GmailTokenServiceTest extends TestCase
             ->once()
             ->andReturn([
                 'access_token' => 'fresh-token',
-                'expires_in'   => 3600,
+                'expires_in' => 3600,
             ]);
 
         $service = new GmailTokenService($mockClient);
-        $token   = $service->getValidAccessToken($account);
+        $token = $service->getValidAccessToken($account);
 
         $this->assertSame('fresh-token', $token);
 
@@ -80,8 +79,8 @@ class GmailTokenServiceTest extends TestCase
     public function test_marks_account_disconnected_on_invalid_grant(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'access_token'     => 'old-token',
-            'refresh_token'    => 'revoked-refresh-token',
+            'access_token' => 'old-token',
+            'refresh_token' => 'revoked-refresh-token',
             'token_expires_at' => now()->subMinutes(10),
         ]);
 
@@ -89,7 +88,7 @@ class GmailTokenServiceTest extends TestCase
         $mockClient->shouldReceive('fetchAccessTokenWithRefreshToken')
             ->once()
             ->andReturn([
-                'error'             => 'invalid_grant',
+                'error' => 'invalid_grant',
                 'error_description' => 'Token has been expired or revoked.',
             ]);
 
@@ -110,8 +109,8 @@ class GmailTokenServiceTest extends TestCase
     public function test_does_not_disconnect_on_transient_error(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'access_token'     => 'old-token',
-            'refresh_token'    => 'refresh-token',
+            'access_token' => 'old-token',
+            'refresh_token' => 'refresh-token',
             'token_expires_at' => now()->subMinutes(10),
         ]);
 
@@ -137,8 +136,8 @@ class GmailTokenServiceTest extends TestCase
     public function test_marks_disconnected_when_no_refresh_token(): void
     {
         $account = ConnectedAccount::factory()->create([
-            'access_token'     => null,
-            'refresh_token'    => null,
+            'access_token' => null,
+            'refresh_token' => null,
             'token_expires_at' => now()->subHour(),
         ]);
 
